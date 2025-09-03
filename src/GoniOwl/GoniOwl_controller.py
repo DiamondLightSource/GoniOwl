@@ -44,6 +44,14 @@ class GoniOwlController:
         io_buf = BytesIO(buffer)
         return io_buf
 
+    def is_image_valid(self, img, low_thresh=20, high_thresh=235):
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        mean_intensity = np.mean(gray)
+        if mean_intensity < low_thresh or mean_intensity > high_thresh:
+            print(f"Image rejected: mean intensity {mean_intensity:.2f}")
+            return False
+        return True
+
     def infer(self):
         self.stream = self.urltoimage(
             "http://bl23i-di-serv-04.diamond.ac.uk:8080/ECAM6.mjpg.jpg"
@@ -57,6 +65,11 @@ class GoniOwlController:
             (self.stream), target_size=(int(img_height / image_divider), int(img_width / image_divider))
         )
         self.img_array = keras.preprocessing.image.img_to_array(self.img_in)
+        if not self.is_image_valid(self.img_array.astype(np.uint8)):
+            self.predicted_label = "invalid"
+            self.score = 0.0
+            self.printscore()
+            return 3
         self.img_array = tf.expand_dims(self.img_array, 0)
         self.predictions = self.model.predict(self.img_array, verbose=0)
         self.score = self.predictions[0]
