@@ -1,18 +1,40 @@
-# GoniOwl
-===========================
+# GoniOwl - Sample Pin Detection for Beamline Collision Prevention
 
-|code_ci| |docs_ci| |coverage| |pypi_version| |license|
+![IMG_0781(1)](https://github.com/user-attachments/assets/8b08de35-6e63-461e-a933-2129fb25e74c)
 
-.. note::
+This repository contains the training and deployment code for a convolutional neural network (CNN) that detects the presence or absence of sample pins on a goniometer, in this case beamline I23 at Diamond Light Source. The model is designed to prevent equipment collisions during automated sample handling by providing real-time classification from beamline camera feeds.
 
-    This project contains template code only. For documentation on how to
-    adopt this skeleton project see
-    https://https://github.com/diamondlightsource.github.io/GoniOwl-cli
+---
 
-This is where you should write a short paragraph that describes what your module does,
-how it does it, and why people should use it.
+## Overview
 
-============== ==============================================================
+Synchrotron beamlines require precise mechanical coordination to avoid collisions between components such as goniometers, sample changers, and detectors. Traditional vision-based methods (e.g., histogram analysis) are sensitive to lighting and camera variability, limiting their reliability.
+
+This project introduces a compact CNN classifier trained on real beamline images to robustly detect sample pin presence. Integrated into the beamline control system, it enables real-time inference and fail-safe decision-making, significantly improving safety and throughput.
+
+---
+
+## Features
+
+- **Binary classification**: Detects `sample_on` vs `sample_off` states.
+- **Robust to lighting and viewpoint changes** via data augmentation.
+- **Real-time inference** on standard beamline control PCs (CPU/GPU).
+- **Fail-safe logic** for low-confidence or invalid exposures.
+- **Training pipeline** with augmentation, validation split, and logging.
+- **Optional hyperparameter tuning** via KerasTuner.
+- **TensorBoard, CSV logging, and checkpointing** included.
+
+---
+
+## Performance
+
+- **Accuracy**: 99.73%
+- **Precision**: 99.56%
+- **Recall**: 99.85%
+- **F1 Score**: 99.71%
+
+Evaluated on a held-out test set with manually verified labels. Over a 3-month deployment, the model prevented multiple potential collisions and outperformed legacy histogram-based methods.
+
 PyPI           ``pip install GoniOwl``
 Source code    https://github.com/https://github.com/diamondlightsource/GoniOwl
 Documentation  https://https://github.com/diamondlightsource.github.io/GoniOwl
@@ -22,39 +44,3 @@ Releases       https://github.com/https://github.com/diamondlightsource/GoniOwl/
 This is where you should put some images or code snippets that illustrate
 some relevant examples. If it is a library then you might put some
 introductory code here:
-
-.. code-block:: python
-
-    from GoniOwl import __version__
-
-    print(f"Hello GoniOwl {__version__}")
-
-Or if it is a commandline tool then you might put some example commands here::
-
-    $ python -m GoniOwl --version
-
-.. |code_ci| image:: https://github.com/https://github.com/diamondlightsource/GoniOwl/actions/workflows/code.yml/badge.svg?branch=dls-python3-release
-    :target: https://github.com/https://github.com/diamondlightsource/GoniOwl/actions/workflows/code.yml
-    :alt: Code CI
-
-.. |docs_ci| image:: https://github.com/https://github.com/diamondlightsource/GoniOwl/actions/workflows/docs.yml/badge.svg?branch=dls-python3-release
-    :target: https://github.com/https://github.com/diamondlightsource/GoniOwl/actions/workflows/docs.yml
-    :alt: Docs CI
-
-.. |coverage| image:: https://codecov.io/gh/https://github.com/diamondlightsource/GoniOwl/branch/dls-python3-release/graph/badge.svg
-    :target: https://codecov.io/gh/https://github.com/diamondlightsource/GoniOwl
-    :alt: Test Coverage
-
-.. |pypi_version| image:: https://img.shields.io/pypi/v/GoniOwl.svg
-    :target: https://pypi.org/project/GoniOwl
-    :alt: Latest PyPI version
-
-.. |license| image:: https://img.shields.io/badge/License-Apache%202.0-blue.svg
-    :target: https://opensource.org/licenses/Apache-2.0
-    :alt: Apache License
-
-..
-    Anything below this line is used when viewing README.rst and will be replaced
-    when included in index.rst
-
-See https://https://github.com/diamondlightsource.github.io/GoniOwl for more detailed documentation.
