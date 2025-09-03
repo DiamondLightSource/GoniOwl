@@ -6,12 +6,11 @@ import os
 import cothread
 from threading import Thread
 
-# import tensorflow
 import cv2
 import time
 from softioc import builder, softioc
 
-from GoniOwl.GoniOwl_binary_controller import GoniOwlController
+from GoniOwl.GoniOwl_controller import GoniOwlController
 
 __all__ = ["main"]
 
@@ -26,10 +25,6 @@ inferpin = builder.boolOut("INFER", ZNAM="Disable", ONAM="Enable", HIGH=1)
 builder.LoadDatabase()
 softioc.iocInit()
 
-# Fire off the monitoring scripts:
-# fdb_controller.setup_fb_auto_onoff_pv() # temprarly off for testing on my machine
-# cothread.Spawn(fdb_controller.start_camonitors)
-# cant have this as needs to have the inference running in a loop
 time.sleep(5)
 
 def update():
@@ -39,8 +34,6 @@ def update():
             goniostatus.set(goniowl_controller.infer())
             a = 0
         cothread.Sleep(1)
-
-# test with: pipenv run python -m GoniOwl
 
 cothread.Spawn(update)
 
