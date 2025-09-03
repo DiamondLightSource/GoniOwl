@@ -5,9 +5,9 @@
 This repository contains the training and deployment code for a convolutional neural network (CNN) that detects the presence or absence of sample pins on a goniometer, in this case beamline I23 at Diamond Light Source. The model is designed to prevent equipment collisions during automated sample handling by providing real-time classification from beamline camera feeds.
 
 ---
-## Usage
+# Usage
 
-# Training
+## Training
 
 - Create python venv `python -m venv .venv`
 - Activate python venv `source .venv/bin/activate`
@@ -19,10 +19,11 @@ This repository contains the training and deployment code for a convolutional ne
 - Set tfimage environment variable `tfimage=/path/to/tensorflow_2.8.2-gpu-jupyter.sif`
 - Run training `singularity exec --nv --home $PWD $tfimage python src/Training/train_binary_classification_model.py --train_dir /path/to/save/cropped/images`
 
-# Inference
+## Inference
 
 
-## Overview
+
+# Overview
 
 Synchrotron beamlines require precise mechanical coordination to avoid collisions between components such as goniometers, sample changers, and detectors. Traditional vision-based methods (e.g., histogram analysis) are sensitive to lighting and camera variability, limiting their reliability.
 
@@ -30,7 +31,7 @@ This project introduces a compact CNN classifier trained on real beamline images
 
 ---
 
-## Features
+# Features
 
 - **Binary classification**: Detects `sample_on` vs `sample_off` states.
 - **Robust to lighting and viewpoint changes** via data augmentation.
@@ -42,7 +43,7 @@ This project introduces a compact CNN classifier trained on real beamline images
 
 ---
 
-## Performance
+# Performance
 
 - **Accuracy**: 99.73%
 - **Precision**: 99.56%
