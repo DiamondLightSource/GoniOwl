@@ -33,8 +33,9 @@ try:
 except Exception:
     HAS_TUNER = False
 
+from typing import Optional, Tuple, List
 
-def setup_logging(level: str = "INFO", log_file: str | None = None) -> logging.Logger:
+def setup_logging(level: str = "INFO", log_file: Optional[str] = None) -> logging.Logger:
     """Configure logging for console and optional file."""
     numeric_level = getattr(logging, (level or "INFO").upper(), logging.INFO)
     fmt = "[%(asctime)s] [%(levelname)s] [%(processName)s] %(message)s"
@@ -193,9 +194,9 @@ def build_datasets(
     img_width: int,
     batch_size: int,
     seed: int,
-    val_dir: str | None = None,
+    val_dir: Optional[str] = None,
     val_split: float = 0.0,
-) -> tuple[tf.data.Dataset, tf.data.Dataset, list[str]]:
+) -> Tuple[tf.data.Dataset, tf.data.Dataset, List[str]]:
     """Create train/val datasets from directories."""
     if val_dir:
         logger.info("Using explicit validation directory: %s", val_dir)
@@ -268,8 +269,8 @@ def run(args: argparse.Namespace) -> None:
     train_ds, val_ds, class_names = build_datasets(
         train_dir=args.train_dir,
         val_dir=args.val_dir,
-        img_height=args.img_height,
-        img_width=args.img_width,
+        img_height=int(args.img_height / args.image_divider),
+        img_width=int(args.img_width / args.image_divider),
         batch_size=args.batch_size,
         seed=args.seed,
         val_split=args.val_split,
@@ -279,14 +280,14 @@ def run(args: argparse.Namespace) -> None:
         if not HAS_TUNER:
             raise RuntimeError("KerasTuner is not installed. Install with: pip install keras-tuner")
         directory = os.path.join(tmpdir, f"tune_b{args.batch_size}_{now_string}")
-        project_name = f"tuning_img{args.img_height}x{args.img_width}"
+        project_name = f"tuning_img{int(args.img_height / args.image_divider)}x{int(args.img_width / args.image_divider)}"
 
         logger.info("Starting hyperparameter tuning with Hyperband...")
         logger.info("Tuner directory: %s", directory)
         logger.info("Tuner project:   %s", project_name)
 
         tuner = kt.Hyperband(
-            lambda hp: model_builder(hp, args.img_height, args.img_width),
+            lambda hp: model_builder(hp, int(args.img_height / args.image_divider), int(args.img_width / args.image_divider)),
             objective="val_accuracy",
             max_epochs=args.tune_max_epochs,
             hyperband_iterations=args.tune_iterations,
@@ -315,10 +316,10 @@ def run(args: argparse.Namespace) -> None:
             best_hps.get("dense_units_2"),
             best_hps.get("learning_rate"),
         )
-        model = model_builder(best_hps, args.img_height, args.img_width)
+        model = model_builder(best_hps, int(args.img_height / args.image_divider), int(args.img_width / args.image_divider))
         model.summary(print_fn=lambda l: logger.info(l))
     else:
-        model = predefined_model(args.img_height, args.img_width, args.learning_rate)
+        model = predefined_model(int(args.img_height / args.image_divider), int(args.img_width / args.image_divider), args.learning_rate)
 
     log_dir = os.path.join(tmpdir, "logs", "fit", now_string)
     ckpt_dir = os.path.join(tmpdir, "checkpoints")
@@ -357,7 +358,7 @@ def run(args: argparse.Namespace) -> None:
 
     logger.info(
         "Starting training for %d epochs (batch=%d, image=%dx%d)...",
-        args.epochs, args.batch_size, args.img_height, args.img_width
+        args.epochs, args.batch_size, int(args.img_height / args.image_divider), int(args.img_width / args.image_divider)
     )
     history = model.fit(
         train_ds,
@@ -384,10 +385,10 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--train-dir", required=True, help="Path to training images directory.")
     parser.add_argument("--val-dir", default=None, help="Path to validation images directory (optional).")
-    parser.add_argument("--val-split", type=float, default=0.0, help="Validation split (0-1) if --val-dir not provided.")
-    parser.add_argument("--img-height", type=int, default=224, help="Input image height.")
-    parser.add_argument("--img-width", type=int, default=224, help="Input image width.")
-    parser.add_argument("--batch-size", type=int, default=32, help="Batch size.")
+    parser.add_argument("--val-split", type=float, default=0.3, help="Validation split (0-1) if --val-dir not provided.")
+    parser.add_argument("--img-height", type=int, default=764, help="Input image height.")
+    parser.add_argument("--img-width", type=int, default=1092, help="Input image width.")
+    parser.add_argument("--batch-size", type=int, default=4, help="Batch size.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
 
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs.")
@@ -403,7 +404,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--parallel", action="store_true", help="Use MirroredStrategy if GPUs are available.")
     parser.add_argument("--tmpdir", default="./outputs", help="Base output directory for logs/checkpoints/models.")
-    parser.add_argument("--image-divider", type=int, default=1, help="Parameter to match previous artifacts.")
+    parser.add_argument("--image-divider", type=int, default=5, help="Value to divide image width and height by before training.")
 
     parser.add_argument("--log-level", default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
