@@ -1,8 +1,9 @@
-.venv/
-.vscode/
-src/Training/.nv/
+.venv
+.vscode
+src/Training/.nv
 src/Training/.keras
+src/Training/.ruff_cache
 src/Training/goniopin_*
 src/Training/test_*
-src/Training/outputs/
+src/Training/outputs
 src/Training/tensorflow_2.8.2-gpu-jupyter.sif
