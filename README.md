@@ -1,5 +1,4 @@
-# GoniOwl
-## Sample Pin Detection for Beamline Collision Prevention
+# GoniOwl - Sample Pin Detection for Beamline Collision Prevention
 
 ![IMG_0781(1)](https://github.com/user-attachments/assets/8b08de35-6e63-461e-a933-2129fb25e74c)
 
@@ -22,7 +21,19 @@ This repository contains the training and deployment code for a convolutional ne
 
 ## Inference
 
+- Copy model from training into src/GoniOwl/
+- Alter GoniOwl_controller.py to target model of choice and set log output directory.
+- From src/GoniOwl/ run `pipenv run python -m GoniOwl`. This will launch the ioc from this terminal, so it is advisable to run this via screen/tmux.
 
+## Testing
+
+- To check that GoniOwl is running and serving PVs, try `caget GONIOWL-TEST:WHOAMI` -> `GONIOWL-TEST:WHOAMI            GoniOwl Python IOC`
+- To check that inference is working, try:
+`caput GONIOWL-TEST:INFER 1` -> ```Old : GONIOWL-TEST:INFER             Disable
+New : GONIOWL-TEST:INFER             Enable
+```
+then
+`caget GONIOWL-TEST:GONIOSTATUS` -> `GONIOWL-TEST:GONIOSTATUS       0`
 
 # Overview
 
