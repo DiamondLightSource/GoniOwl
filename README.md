@@ -34,13 +34,3 @@ This project introduces a compact CNN classifier trained on real beamline images
 - **F1 Score**: 99.71%
 
 Evaluated on a held-out test set with manually verified labels. Over a 3-month deployment, the model prevented multiple potential collisions and outperformed legacy histogram-based methods.
-
-PyPI           ``pip install GoniOwl``
-Source code    https://github.com/https://github.com/diamondlightsource/GoniOwl
-Documentation  https://https://github.com/diamondlightsource.github.io/GoniOwl
-Releases       https://github.com/https://github.com/diamondlightsource/GoniOwl/releases
-============== ==============================================================
-
-This is where you should put some images or code snippets that illustrate
-some relevant examples. If it is a library then you might put some
-introductory code here:
