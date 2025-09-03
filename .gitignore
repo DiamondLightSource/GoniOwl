@@ -1,0 +1,7 @@
+.venv/
+.vscode/
+src/Training/.nv/
+src/Training/.keras
+src/Training/goniopin_*
+src/Training/test_*
+src/Training/outputs/
