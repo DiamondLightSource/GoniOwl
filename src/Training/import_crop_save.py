@@ -121,7 +121,7 @@ def moveImagesToTest(path=path, percentage=10):
         percentage (float, optional): Percentage of images to move to test directory. Defaults to 10.
     """
     logger.info("Creating test split (percentage=%s%%)...", percentage)
-    testdir = os.path.join(cwd, f"test_{now}_binary")
+    testdir = os.path.join(imgdir, f"test_{now}_binary")
     os.makedirs(testdir, exist_ok=True)
 
     total_moved = 0
