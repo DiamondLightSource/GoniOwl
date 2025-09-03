@@ -5,6 +5,22 @@
 This repository contains the training and deployment code for a convolutional neural network (CNN) that detects the presence or absence of sample pins on a goniometer, in this case beamline I23 at Diamond Light Source. The model is designed to prevent equipment collisions during automated sample handling by providing real-time classification from beamline camera feeds.
 
 ---
+## Usage
+
+# Training
+
+- Create python venv `python -m venv .venv`
+- Activate python venv `source .venv/bin/activate`
+- Install required modules `pip install tqdm opencv-python`
+- Alter the script import_crop_save.py depending on the directory structure of your input images.
+- Run `python src/Training/import_crop_save.py --snapshots /path/to/snapshots --imgdir /path/to/save/cropped/images`
+- Check images in output folders manually
+- Generate or download Singularity image
+- Set tfimage environment variable `tfimage=/path/to/tensorflow_2.8.2-gpu-jupyter.sif`
+- Run training `singularity exec --nv --home $PWD $tfimage python src/Training/train_binary_classification_model.py --train_dir /path/to/save/cropped/images`
+
+# Inference
+
 
 ## Overview
 
