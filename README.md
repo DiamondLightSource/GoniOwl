@@ -36,4 +36,5 @@ This project introduces a compact CNN classifier trained on real beamline images
 Evaluated on a held-out test set with manually verified labels. Over a 3-month deployment, the model prevented multiple potential collisions and outperformed legacy histogram-based methods.
 
 Raw training images: 10.5281/zenodo.17047675
+
 Singularity build used for training: 10.5281/zenodo.17047767
