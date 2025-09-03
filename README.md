@@ -1,4 +1,5 @@
-# GoniOwl - Sample Pin Detection for Beamline Collision Prevention
+# GoniOwl
+## Sample Pin Detection for Beamline Collision Prevention
 
 ![IMG_0781(1)](https://github.com/user-attachments/assets/8b08de35-6e63-461e-a933-2129fb25e74c)
 
