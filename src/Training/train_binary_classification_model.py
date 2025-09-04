@@ -19,6 +19,7 @@ import sys
 import argparse
 import logging
 import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
 from datetime import datetime
 
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
@@ -434,9 +435,6 @@ def run(args: argparse.Namespace) -> None:
     logger.info("Saving model to: %s", final_model_path)
     model.save(final_model_path)
     logger.info("Model saved successfully.")
-    from sklearn.metrics import confusion_matrix
-    import matplotlib.pyplot as plt
-    import seaborn as sns
 
     y_true = []
     y_pred = []
@@ -447,13 +445,22 @@ def run(args: argparse.Namespace) -> None:
         y_pred.extend(preds)
 
     cm = confusion_matrix(y_true, np.array(y_pred) > 0.5)
-    sns.heatmap(cm, annot=True, fmt='d')
-    plt.xlabel("Predicted")
-    plt.ylabel("Actual")
-    plt.title("Confusion Matrix")
+    _, ax = plt.subplots()
+    ax.imshow(cm, cmap='Blues')
+    ax.set_xticks(np.arange(2))
+    ax.set_yticks(np.arange(2))
+    ax.set_xticklabels(['Pred 0', 'Pred 1'])
+    ax.set_yticklabels(['True 0', 'True 1'])
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+    for i in range(2):
+        for j in range(2):
+            ax.text(j, i, cm[i, j], ha="center", va="center", color="black")
+    ax.set_title("Confusion Matrix")
+    ax.set_xlabel("Predicted Label")
+    ax.set_ylabel("True Label")
+    plt.tight_layout()
     plt.savefig(f"{args.tmpdir}/confusionmatrix.png")
     plt.close()
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a binary classifier with logging and optional tuning.")
