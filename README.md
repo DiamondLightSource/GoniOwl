@@ -61,11 +61,12 @@ This project introduces a compact CNN classifier trained on real beamline images
 ---
 
 # Performance
-
-- **Accuracy**: 99.73%
-- **Precision**: 99.56%
-- **Recall**: 99.85%
-- **F1 Score**: 99.71%
+Validation
+- **Accuracy**: 99.83%
+- **Precision**: 99.82%
+- **Recall**: 99.82%
+- **AUC**: 99.87%
+- **F1 Score**: 99.82%
 
 Evaluated on a held-out test set with manually verified labels. Over a 3-month deployment, the model prevented multiple potential collisions and outperformed legacy histogram-based methods.
 
