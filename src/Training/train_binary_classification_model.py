@@ -438,7 +438,7 @@ def run(args: argparse.Namespace) -> None:
 
     y_true = []
     y_pred = []
-
+    logger.info("Running predictions on validation set for confusion matrix...")
     for images, labels in val_ds:
         preds = model.predict(images).flatten()
         y_true.extend(labels.numpy())
