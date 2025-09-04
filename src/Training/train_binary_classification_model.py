@@ -18,14 +18,17 @@ import os
 import sys
 import argparse
 import logging
+import matplotlib.pyplot as plt
 from datetime import datetime
 
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
+import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers, Sequential
 from tensorflow.keras import backend as K
+import tensorflow_addons as tfa
 
 try:
     import keras_tuner as kt
@@ -77,6 +80,26 @@ class LoggingCallback(keras.callbacks.Callback):
         logger.info("Training complete.")
 
 
+def augmentations(image, label):
+    radians = tf.random.uniform([], -3, 3) * (np.pi / 180.0)
+    image = tfa.image.rotate(image, radians, fill_mode="reflect")
+
+    input_shape = tf.shape(image)
+    width_shift = tf.cast(input_shape[1], tf.float32) * tf.random.uniform(
+        [], -0.05, 0.05
+    )
+    height_shift = tf.cast(input_shape[0], tf.float32) * tf.random.uniform(
+        [], -0.05, 0.05
+    )
+    image = tfa.image.translate(image, [width_shift, height_shift], fill_mode="reflect")
+
+    image = tf.image.random_brightness(image, max_delta=0.4)
+    image = tf.image.random_contrast(image, lower=0.6, upper=1.4)
+    image = image + (tf.random.normal(shape=tf.shape(image), mean=0.0, stddev=5.0))
+    image = tf.clip_by_value(image, 0.0, 255.0)
+    return image, label
+
+
 def predefined_model(img_height: int, img_width: int, learning_rate: float = 1e-3) -> keras.Model:
     """Predetermined model architecture."""
     logger.info("Building predefined model...")
@@ -116,12 +139,7 @@ def predefined_model(img_height: int, img_width: int, learning_rate: float = 1e-
     model.compile(
         keras.optimizers.Adam(learning_rate),
         loss="binary_crossentropy",
-        metrics=[
-            tf.keras.metrics.BinaryAccuracy(name="accuracy"),
-            tf.keras.metrics.Precision(name="precision"),
-            tf.keras.metrics.Recall(name="recall"),
-            tf.keras.metrics.AUC(name="auc"),
-        ],
+        metrics=["Accuracy", "Precision", "Recall", "AUC"],
     )
     logger.info("Model compiled.")
     model.summary(print_fn=lambda l: logger.info(l))
@@ -198,33 +216,54 @@ def build_datasets(
     val_split: float = 0.0,
 ) -> Tuple[tf.data.Dataset, tf.data.Dataset, List[str]]:
     """Create train/val datasets from directories."""
+    logger.info("Using image size for taining: %dx%d", img_height, img_width)
     if val_dir:
         logger.info("Using explicit validation directory: %s", val_dir)
+        all_labels = []
         train_ds = tf.keras.utils.image_dataset_from_directory(
             train_dir,
-            labels="inferred",
             label_mode="binary",
             image_size=(img_height, img_width),
             batch_size=batch_size,
             shuffle=True,
             seed=seed,
         )
+        for images, labels in train_ds:
+            all_labels.extend(labels.numpy())
+        unique, counts = np.unique(all_labels, return_counts=True)
+        logger.info(f"Training class split: {dict(zip(unique, counts))}")
+        os.makedirs(f"{args.tmpdir}/sample_images", exist_ok=True)
+        for images, labels in train_ds.take(1):
+            for i in range(min(20, len(images))):
+                plt.imshow(images[i].numpy().astype("uint8"))
+                plt.title(f"Label: {labels[i].numpy()}")
+                plt.axis("off")
+                plt.savefig(f"{args.tmpdir}/sample_images/sample_{i}_label_{int(labels[i].numpy())}.png")
+                plt.close()   
+        train_ds = train_ds.map(augmentations, num_parallel_calls=tf.data.AUTOTUNE)
+        all_labels = []
         val_ds = tf.keras.utils.image_dataset_from_directory(
             val_dir,
-            labels="inferred",
             label_mode="binary",
             image_size=(img_height, img_width),
             batch_size=batch_size,
             shuffle=False,
+            seed=seed,
         )
-        class_names = train_ds.class_names
+        for images, labels in val_ds:
+            all_labels.extend(labels.numpy())
+        unique, counts = np.unique(all_labels, return_counts=True)
+        logger.info(f"Validation class split: {dict(zip(unique, counts))}")
+        class_names = val_ds.class_names
+        logger.info("Training samples: %d, Validation samples: %d", len(train_ds)*batch_size, len(val_ds)*batch_size)
+        logger.info("Classes: %s", class_names)
     else:
         if not (0.0 < val_split < 1.0):
             raise ValueError("When --val-dir is not provided, you must set --val-split in (0,1).")
         logger.info("Using train/validation split from: %s (val_split=%.2f)", train_dir, val_split)
+        all_labels = []     
         train_ds = tf.keras.utils.image_dataset_from_directory(
             train_dir,
-            labels="inferred",
             label_mode="binary",
             validation_split=val_split,
             subset="training",
@@ -233,18 +272,35 @@ def build_datasets(
             shuffle=True,
             seed=seed,
         )
+        for images, labels in train_ds:
+            all_labels.extend(labels.numpy())
+        unique, counts = np.unique(all_labels, return_counts=True)
+        logger.info(f"Training class split: {dict(zip(unique, counts))}")
+        os.makedirs(f"{args.tmpdir}/sample_images", exist_ok=True)
+        for images, labels in train_ds.take(1):
+            for i in range(min(20, len(images))):
+                plt.imshow(images[i].numpy().astype("uint8"))
+                plt.title(f"Label: {labels[i].numpy()}")
+                plt.axis("off")
+                plt.savefig(f"{args.tmpdir}/sample_images/sample_{i}_label_{int(labels[i].numpy())}.png")
+                plt.close()   
+        train_ds = train_ds.map(augmentations, num_parallel_calls=tf.data.AUTOTUNE)
+        all_labels = []
         val_ds = tf.keras.utils.image_dataset_from_directory(
             train_dir,
-            labels="inferred",
             label_mode="binary",
             validation_split=val_split,
             subset="validation",
             image_size=(img_height, img_width),
             batch_size=batch_size,
-            shuffle=False,
+            shuffle=True,
             seed=seed,
         )
-        class_names = train_ds.class_names
+        for images, labels in val_ds:
+            all_labels.extend(labels.numpy())
+        unique, counts = np.unique(all_labels, return_counts=True)
+        logger.info(f"Validation class split: {dict(zip(unique, counts))}")
+        class_names = val_ds.class_names
 
     logger.info("Classes: %s", class_names)
 
@@ -378,6 +434,25 @@ def run(args: argparse.Namespace) -> None:
     logger.info("Saving model to: %s", final_model_path)
     model.save(final_model_path)
     logger.info("Model saved successfully.")
+    from sklearn.metrics import confusion_matrix
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    y_true = []
+    y_pred = []
+
+    for images, labels in val_ds:
+        preds = model.predict(images).flatten()
+        y_true.extend(labels.numpy())
+        y_pred.extend(preds)
+
+    cm = confusion_matrix(y_true, np.array(y_pred) > 0.5)
+    sns.heatmap(cm, annot=True, fmt='d')
+    plt.xlabel("Predicted")
+    plt.ylabel("Actual")
+    plt.title("Confusion Matrix")
+    plt.savefig(f"{args.tmpdir}/confusionmatrix.png")
+    plt.close()
 
 
 def parse_args() -> argparse.Namespace:
