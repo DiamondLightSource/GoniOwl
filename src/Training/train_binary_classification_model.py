@@ -390,7 +390,7 @@ def run(args: argparse.Namespace) -> None:
     callbacks = [
         keras.callbacks.ModelCheckpoint(
             filepath=os.path.join(
-                ckpt_dir, f"{now_string}_epoch{{epoch:02d}}_binary_batch{args.batch_size}.h5"
+                ckpt_dir, f"{now_string}_epoch{{epoch:02d}}_binary_batch{args.batch_size}.keras"
             ),
             save_best_only=False,
             save_weights_only=False,
@@ -430,7 +430,7 @@ def run(args: argparse.Namespace) -> None:
     final_model_path = os.path.join(
         tmpdir,
         f"{now_string}_binary_batch{args.batch_size}_div{args.image_divider}"
-        f"{'_tuned' if args.tune else ''}.h5"
+        f"{'_tuned' if args.tune else ''}.keras"
     )
     logger.info("Saving model to: %s", final_model_path)
     model.save(final_model_path)
