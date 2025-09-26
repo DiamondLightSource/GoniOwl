@@ -1,5 +1,7 @@
 .venv
+venv
 .vscode
+outputs
 src/Training/.nv
 src/Training/.keras
 src/Training/.ruff_cache
