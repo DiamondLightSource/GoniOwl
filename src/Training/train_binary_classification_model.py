@@ -29,7 +29,6 @@ import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers, Sequential
 from tensorflow.keras import backend as K
-import tensorflow_addons as tfa
 
 try:
     import keras_tuner as kt
@@ -80,20 +79,13 @@ class LoggingCallback(keras.callbacks.Callback):
     def on_train_end(self, logs=None):
         logger.info("Training complete.")
 
+rotation_layer = layers.RandomRotation(factor=3.0 / 360.0, fill_mode="reflect", interpolation="bilinear")
+translation_layer = layers.RandomTranslation(height_factor=0.05, width_factor=0.05, fill_mode="reflect")
 
 def augmentations(image, label):
-    radians = tf.random.uniform([], -3, 3) * (np.pi / 180.0)
-    image = tfa.image.rotate(image, radians, fill_mode="reflect")
-
-    input_shape = tf.shape(image)
-    width_shift = tf.cast(input_shape[1], tf.float32) * tf.random.uniform(
-        [], -0.05, 0.05
-    )
-    height_shift = tf.cast(input_shape[0], tf.float32) * tf.random.uniform(
-        [], -0.05, 0.05
-    )
-    image = tfa.image.translate(image, [width_shift, height_shift], fill_mode="reflect")
-
+    image = tf.cast(image, tf.float32)
+    image = rotation_layer(image, training=True)
+    image = translation_layer(image, training=True)
     image = tf.image.random_brightness(image, max_delta=0.4)
     image = tf.image.random_contrast(image, lower=0.6, upper=1.4)
     image = image + (tf.random.normal(shape=tf.shape(image), mean=0.0, stddev=5.0))
@@ -390,7 +382,7 @@ def run(args: argparse.Namespace) -> None:
     callbacks = [
         keras.callbacks.ModelCheckpoint(
             filepath=os.path.join(
-                ckpt_dir, f"{now_string}_epoch{{epoch:02d}}_binary_batch{args.batch_size}.h5"
+                ckpt_dir, f"{now_string}_epoch{{epoch:02d}}_binary_batch{args.batch_size}.keras"
             ),
             save_best_only=False,
             save_weights_only=False,
@@ -430,7 +422,7 @@ def run(args: argparse.Namespace) -> None:
     final_model_path = os.path.join(
         tmpdir,
         f"{now_string}_binary_batch{args.batch_size}_div{args.image_divider}"
-        f"{'_tuned' if args.tune else ''}.h5"
+        f"{'_tuned' if args.tune else ''}.keras"
     )
     logger.info("Saving model to: %s", final_model_path)
     model.save(final_model_path)
