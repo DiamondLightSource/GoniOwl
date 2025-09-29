@@ -84,8 +84,8 @@ translation_layer = layers.RandomTranslation(height_factor=0.05, width_factor=0.
 
 def augmentations(image, label):
     image = tf.cast(image, tf.float32)
-    image = rotation_layer(image, training=True)
-    image = translation_layer(image, training=True)
+    image = rotation_layer(image)
+    image = translation_layer(image)
     image = tf.image.random_brightness(image, max_delta=0.4)
     image = tf.image.random_contrast(image, lower=0.6, upper=1.4)
     image = image + (tf.random.normal(shape=tf.shape(image), mean=0.0, stddev=5.0))
