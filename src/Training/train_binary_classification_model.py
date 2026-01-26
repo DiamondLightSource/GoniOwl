@@ -231,7 +231,7 @@ def build_datasets(
                 plt.imshow(images[i].numpy().astype("uint8"))
                 plt.title(f"Label: {labels[i].numpy()}")
                 plt.axis("off")
-                plt.savefig(f"{args.tmpdir}/sample_images/sample_{i}_label_{int(labels[i].numpy())}.png")
+                plt.savefig(f"{args.tmpdir}/sample_images/sample_{i}_label_{int(labels[i].numpy().item())}.png")
                 plt.close()   
         train_ds = train_ds.map(augmentations, num_parallel_calls=tf.data.AUTOTUNE)
         all_labels = []
@@ -275,7 +275,7 @@ def build_datasets(
                 plt.imshow(images[i].numpy().astype("uint8"))
                 plt.title(f"Label: {labels[i].numpy()}")
                 plt.axis("off")
-                plt.savefig(f"{args.tmpdir}/sample_images/sample_{i}_label_{int(labels[i].numpy())}.png")
+                plt.savefig(f"{args.tmpdir}/sample_images/sample_{i}_label_{int(labels[i].numpy().item())}.png")
                 plt.close()   
         train_ds = train_ds.map(augmentations, num_parallel_calls=tf.data.AUTOTUNE)
         all_labels = []
