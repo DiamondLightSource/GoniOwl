@@ -9,3 +9,5 @@ src/Training/goniopin_*
 src/Training/test_*
 src/Training/outputs
 src/Training/tensorflow_2.8.2-gpu-jupyter.sif
+*.egg-info
+__pycache__
