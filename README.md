@@ -9,6 +9,20 @@ This repository contains the training and deployment code for a convolutional ne
 
 ## Training
 
+## Installation
+
+### Using UV pyproject.toml (Recommended)
+- Create UV virtual environment: `uv venv`
+- Activate virtual environment: `source .venv/bin/activate`
+- Install dependencies from pyproject.toml: `uv pip install -e .`
+
+### Using pip pyproject.toml
+- Create Python virtual environment: `python -m venv .venv`
+- Activate virtual environment: `source .venv/bin/activate`
+- Install dependencies from pyproject.toml: `pip install -e .`
+
+The `-e` flag installs the package in editable mode, allowing you to modify the code without reinstalling.
+
 ### Using UV
 - Make uv venv `uv venv`
 - Activate uv venv `source .venv/bin/activate`
