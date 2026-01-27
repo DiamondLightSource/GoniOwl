@@ -29,7 +29,6 @@ import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers, Sequential
 from tensorflow.keras import backend as K
-import tensorflow_addons as tfa
 
 try:
     import keras_tuner as kt
@@ -80,20 +79,13 @@ class LoggingCallback(keras.callbacks.Callback):
     def on_train_end(self, logs=None):
         logger.info("Training complete.")
 
+rotation_layer = layers.RandomRotation(factor=3.0 / 360.0, fill_mode="reflect", interpolation="bilinear")
+translation_layer = layers.RandomTranslation(height_factor=0.05, width_factor=0.05, fill_mode="reflect")
 
 def augmentations(image, label):
-    radians = tf.random.uniform([], -3, 3) * (np.pi / 180.0)
-    image = tfa.image.rotate(image, radians, fill_mode="reflect")
-
-    input_shape = tf.shape(image)
-    width_shift = tf.cast(input_shape[1], tf.float32) * tf.random.uniform(
-        [], -0.05, 0.05
-    )
-    height_shift = tf.cast(input_shape[0], tf.float32) * tf.random.uniform(
-        [], -0.05, 0.05
-    )
-    image = tfa.image.translate(image, [width_shift, height_shift], fill_mode="reflect")
-
+    image = tf.cast(image, tf.float32)
+    image = rotation_layer(image)
+    image = translation_layer(image)
     image = tf.image.random_brightness(image, max_delta=0.4)
     image = tf.image.random_contrast(image, lower=0.6, upper=1.4)
     image = image + (tf.random.normal(shape=tf.shape(image), mean=0.0, stddev=5.0))
@@ -239,7 +231,7 @@ def build_datasets(
                 plt.imshow(images[i].numpy().astype("uint8"))
                 plt.title(f"Label: {labels[i].numpy()}")
                 plt.axis("off")
-                plt.savefig(f"{args.tmpdir}/sample_images/sample_{i}_label_{int(labels[i].numpy())}.png")
+                plt.savefig(f"{args.tmpdir}/sample_images/sample_{i}_label_{int(labels[i].numpy().item())}.png")
                 plt.close()   
         train_ds = train_ds.map(augmentations, num_parallel_calls=tf.data.AUTOTUNE)
         all_labels = []
@@ -283,7 +275,7 @@ def build_datasets(
                 plt.imshow(images[i].numpy().astype("uint8"))
                 plt.title(f"Label: {labels[i].numpy()}")
                 plt.axis("off")
-                plt.savefig(f"{args.tmpdir}/sample_images/sample_{i}_label_{int(labels[i].numpy())}.png")
+                plt.savefig(f"{args.tmpdir}/sample_images/sample_{i}_label_{int(labels[i].numpy().item())}.png")
                 plt.close()   
         train_ds = train_ds.map(augmentations, num_parallel_calls=tf.data.AUTOTUNE)
         all_labels = []
@@ -338,21 +330,52 @@ def run(args: argparse.Namespace) -> None:
             raise RuntimeError("KerasTuner is not installed. Install with: pip install keras-tuner")
         directory = os.path.join(tmpdir, f"tune_b{args.batch_size}_{now_string}")
         project_name = f"tuning_img{int(args.img_height / args.image_divider)}x{int(args.img_width / args.image_divider)}"
+        tunertype = args.tuner # hyperband is default
 
-        logger.info("Starting hyperparameter tuning with Hyperband...")
+        logger.info("Starting hyperparameter tuning with %s...", tunertype)
         logger.info("Tuner directory: %s", directory)
         logger.info("Tuner project:   %s", project_name)
+        if tunertype == "bayesianoptimization":
+            tuner = kt.BayesianOptimization(
+                lambda hp: model_builder(hp, int(args.img_height / args.image_divider), int(args.img_width / args.image_divider)),
+                objective="val_accuracy",
+                max_trials=args.tune_iterations,
+                num_initial_points=5,
+                alpha=0.0001, #exploration factor, higher = more exploration
+                beta=2.576, # standard value for 99% confidence
+                directory=directory,
+                project_name=project_name,
+                seed=args.seed,
+            )
+        elif tunertype == "gridsearch":
+            tuner = kt.GridSearch(
+                lambda hp: model_builder(hp, int(args.img_height / args.image_divider), int(args.img_width / args.image_divider)),
+                objective="val_accuracy",
+                directory=directory,
+                project_name=project_name,
+                seed=args.seed,
+            )
+        elif tunertype == "randomsearch":
+            tuner = kt.RandomSearch(
+                lambda hp: model_builder(hp, int(args.img_height / args.image_divider), int(args.img_width / args.image_divider)),
+                objective="val_accuracy",
+                max_trials=args.tune_iterations,
+                directory=directory,
+                project_name=project_name,
+                seed=args.seed,
+            )
+        else:
+            tuner = kt.Hyperband(
+                lambda hp: model_builder(hp, int(args.img_height / args.image_divider), int(args.img_width / args.image_divider)),
+                objective="val_accuracy",
+                max_epochs=args.tune_max_epochs,
+                hyperband_iterations=args.tune_iterations,
+                factor=3,
+                directory=directory,
+                project_name=project_name,
+                seed=args.seed,
+            )
 
-        tuner = kt.Hyperband(
-            lambda hp: model_builder(hp, int(args.img_height / args.image_divider), int(args.img_width / args.image_divider)),
-            objective="val_accuracy",
-            max_epochs=args.tune_max_epochs,
-            hyperband_iterations=args.tune_iterations,
-            factor=3,
-            directory=directory,
-            project_name=project_name,
-            seed=args.seed,
-        )
         tuner.search(
             train_ds,
             epochs=args.tune_search_epochs,
@@ -479,7 +502,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--es-patience", type=int, default=10, help="Patience for EarlyStopping.")
     parser.add_argument("--plateau-patience", type=int, default=5, help="Patience for ReduceLROnPlateau.")
 
-    parser.add_argument("--tune", action="store_true", help="Use KerasTuner Hyperband to search hyperparameters.")
+    parser.add_argument("--tune", action="store_true", help="Use KerasTuner to search hyperparameters.")
+    parser.add_argument("--tuner", type=str, default="hyperband", help="Which kerastuner method to use. Choose from: hyperband, bayesianoptimization, gridsearch, randomsearch")
     parser.add_argument("--tune-max-epochs", type=int, default=15, help="Hyperband max epochs per bracket.")
     parser.add_argument("--tune-iterations", type=int, default=3, help="Hyperband iterations.")
     parser.add_argument("--tune-search-epochs", type=int, default=5, help="Epochs used in tuner.search().")

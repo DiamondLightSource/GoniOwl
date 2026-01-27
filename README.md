@@ -9,6 +9,16 @@ This repository contains the training and deployment code for a convolutional ne
 
 ## Training
 
+### Using UV
+- Make uv venv `uv venv`
+- Activate uv venv `source .venv/bin/activate`
+- Install required modules `uv pip install tqdm matplotlib scikit-learn numpy opencv-python tensorflow[and-cuda]`
+- Alter the script import_crop_save.py depending on the directory structure of your input images.
+- Run `python src/Training/import_crop_save.py --snapshots /path/to/snapshots --imgdir /path/to/save/cropped/images`
+- Check images in output folders manually
+- Run training `python src/Training/train_binary_classification_model.py --train_dir /path/to/save/cropped/images --tune`
+
+### Using python/pip
 - Create python venv `python -m venv .venv`
 - Activate python venv `source .venv/bin/activate`
 - Install required modules `pip install tqdm opencv-python`
@@ -24,6 +34,33 @@ This repository contains the training and deployment code for a convolutional ne
 - Copy model from training into src/GoniOwl/
 - Alter GoniOwl_controller.py to target model of choice and set log output directory.
 - From src/GoniOwl/ run `pipenv run python -m GoniOwl`. This will launch the ioc from this terminal, so it is advisable to run this via screen/tmux.
+
+## Inference on Disagreements
+
+To evaluate model performance on images where the live model and training model disagree:
+
+```bash
+python src/Training/inference_on_disagreements.py \
+  --model-path ./outputs/YOUR_MODEL.keras \
+  --disagreement-dir /dls/science/groups/i23/scripts/chris/GoniOwl_metrics/disagreements \
+  --img-height 152 \
+  --img-width 218 \
+  --output-dir ./outputs/inference_results
+```
+
+**Arguments:**
+- `--model-path`: Path to the trained `.keras` model file (required)
+- `--disagreement-dir`: Path to folder containing misclassified/disagreement images (required)
+- `--img-height`: Image height used during training (default: 152, adjust based on your training dimensions)
+- `--img-width`: Image width used during training (default: 218, adjust based on your training dimensions)
+- `--output-dir`: Directory to save results and visualizations (default: `./inference_results`)
+
+**Output:**
+- Interactive display of each image with model prediction and confidence percentage
+- PNG visualizations of each image with predictions saved to `--output-dir`
+- CSV summary file (`inference_results.csv`) with filename, predicted class, raw prediction score, and confidence for all images
+
+**Note:** Image dimensions should match the dimensions used during training. If you trained with `--image-divider 5` on 764×1090 images, use `152×218` (764÷5 ≈ 152, 1090÷5 ≈ 218).
 
 ## Testing
 
