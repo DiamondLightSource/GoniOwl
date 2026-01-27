@@ -330,21 +330,52 @@ def run(args: argparse.Namespace) -> None:
             raise RuntimeError("KerasTuner is not installed. Install with: pip install keras-tuner")
         directory = os.path.join(tmpdir, f"tune_b{args.batch_size}_{now_string}")
         project_name = f"tuning_img{int(args.img_height / args.image_divider)}x{int(args.img_width / args.image_divider)}"
+        tunertype = args.tuner # hyperband is default
 
-        logger.info("Starting hyperparameter tuning with Hyperband...")
+        logger.info("Starting hyperparameter tuning with %s...", tunertype)
         logger.info("Tuner directory: %s", directory)
         logger.info("Tuner project:   %s", project_name)
+        if tunertype == "bayesianoptimization":
+            tuner = kt.BayesianOptimization(
+                lambda hp: model_builder(hp, int(args.img_height / args.image_divider), int(args.img_width / args.image_divider)),
+                objective="val_accuracy",
+                max_trials=args.tune_iterations,
+                num_initial_points=5,
+                alpha=0.0001, #exploration factor, higher = more exploration
+                beta=2.576, # standard value for 99% confidence
+                directory=directory,
+                project_name=project_name,
+                seed=args.seed,
+            )
+        elif tunertype == "gridsearch":
+            tuner = kt.GridSearch(
+                lambda hp: model_builder(hp, int(args.img_height / args.image_divider), int(args.img_width / args.image_divider)),
+                objective="val_accuracy",
+                directory=directory,
+                project_name=project_name,
+                seed=args.seed,
+            )
+        elif tunertype == "randomsearch":
+            tuner = kt.RandomSearch(
+                lambda hp: model_builder(hp, int(args.img_height / args.image_divider), int(args.img_width / args.image_divider)),
+                objective="val_accuracy",
+                max_trials=args.tune_iterations,
+                directory=directory,
+                project_name=project_name,
+                seed=args.seed,
+            )
+        else:
+            tuner = kt.Hyperband(
+                lambda hp: model_builder(hp, int(args.img_height / args.image_divider), int(args.img_width / args.image_divider)),
+                objective="val_accuracy",
+                max_epochs=args.tune_max_epochs,
+                hyperband_iterations=args.tune_iterations,
+                factor=3,
+                directory=directory,
+                project_name=project_name,
+                seed=args.seed,
+            )
 
-        tuner = kt.Hyperband(
-            lambda hp: model_builder(hp, int(args.img_height / args.image_divider), int(args.img_width / args.image_divider)),
-            objective="val_accuracy",
-            max_epochs=args.tune_max_epochs,
-            hyperband_iterations=args.tune_iterations,
-            factor=3,
-            directory=directory,
-            project_name=project_name,
-            seed=args.seed,
-        )
         tuner.search(
             train_ds,
             epochs=args.tune_search_epochs,
@@ -471,7 +502,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--es-patience", type=int, default=10, help="Patience for EarlyStopping.")
     parser.add_argument("--plateau-patience", type=int, default=5, help="Patience for ReduceLROnPlateau.")
 
-    parser.add_argument("--tune", action="store_true", help="Use KerasTuner Hyperband to search hyperparameters.")
+    parser.add_argument("--tune", action="store_true", help="Use KerasTuner to search hyperparameters.")
+    parser.add_argument("--tuner", type=str, default="hyperband", help="Which kerastuner method to use. Choose from: hyperband, bayesianoptimization, gridsearch, randomsearch")
     parser.add_argument("--tune-max-epochs", type=int, default=15, help="Hyperband max epochs per bracket.")
     parser.add_argument("--tune-iterations", type=int, default=3, help="Hyperband iterations.")
     parser.add_argument("--tune-search-epochs", type=int, default=5, help="Epochs used in tuner.search().")
