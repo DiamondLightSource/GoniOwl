@@ -9,6 +9,16 @@ This repository contains the training and deployment code for a convolutional ne
 
 ## Training
 
+### Using UV
+- Make uv venv `uv venv`
+- Activate uv venv `source .venv/bin/activate`
+- Install required modules `uv pip install tqdm matplotlib scikit-learn numpy opencv-python tensorflow[and-cuda]`
+- Alter the script import_crop_save.py depending on the directory structure of your input images.
+- Run `python src/Training/import_crop_save.py --snapshots /path/to/snapshots --imgdir /path/to/save/cropped/images`
+- Check images in output folders manually
+- Run training `python src/Training/train_binary_classification_model.py --train_dir /path/to/save/cropped/images --tune`
+
+### Using python/pip
 - Create python venv `python -m venv .venv`
 - Activate python venv `source .venv/bin/activate`
 - Install required modules `pip install tqdm opencv-python`
