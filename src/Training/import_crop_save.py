@@ -17,7 +17,7 @@ def setup_logging(level: str = "INFO", log_file: str | None = None) -> None:
     fmt = "[%(asctime)s] [%(levelname)s] [%(processName)s] %(message)s"
     datefmt = "%Y-%m-%d %H:%M:%S"
 
-    handlers = [logging.StreamHandler()]
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
     if log_file:
         handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
 
