@@ -66,7 +66,12 @@ def run_inference(
             img_array = tf.expand_dims(img_array, 0)
             
             prediction = model.predict(img_array, verbose=0)[0][0]
-            class_label = "Class 1" if prediction > 0.5 else "Class 0"
+            if prediction > 0.85:
+                class_label = "pin on"
+            elif prediction < 0.15:
+                class_label = "pin off"
+            else:
+                class_label = "undetermined"
             confidence = prediction if prediction > 0.5 else 1 - prediction
             
             results.append({
@@ -108,7 +113,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--disagreement-dir", required=True, help="Path to folder with misclassified images.")
     parser.add_argument("--img-height", type=int, default=152, help="Image height (matches training).")
     parser.add_argument("--img-width", type=int, default=218, help="Image width (matches training).")
-    parser.add_argument("--output-dir", default="./inference_results", help="Output directory for results.")
+    parser.add_argument("--output-dir", default="./outputs/inference_results", help="Output directory for results.")
     return parser.parse_args()
 
 if __name__ == "__main__":

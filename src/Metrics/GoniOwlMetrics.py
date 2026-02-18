@@ -22,7 +22,8 @@ df["Human"] = df["Human"].replace({"human_no": "off", "human_yes": "on"})
 
 df = df[~df["DateTime"].isin(dodgy_data)]
 df = df[~df["GoniOwl"].isin(["error", "light", "dark"])]
-df.to_csv("GoniOwlMetrics_output.csv", index=False)
+os.makedirs("outputs", exist_ok=True)
+df.to_csv("outputs/GoniOwlMetrics_output.csv", index=False)
 
 total_rows = len(df)
 same_histogram_goniowl_human = ((df["Histogram"] == df["GoniOwl"]) & (df["GoniOwl"] == df["Human"])).mean() * 100
@@ -33,16 +34,16 @@ print(f"Percentage of time Histogram, GoniOwl, and Human are the same: {same_his
 print(f"Percentage of time GoniOwl and Human are the same: {same_goniowl_human:.2f}%")
 print(f"Percentage of time Histogram and Human are the same: {same_histogram_human:.2f}%")
 
-df[~((df["Histogram"] == df["GoniOwl"]) & (df["GoniOwl"] == df["Human"]))].to_csv("histogramvsgoniowlvshuman.csv", index=False)
-df[df["GoniOwl"] != df["Human"]].to_csv("goniowlvshuman.csv", index=False)
-df[df["Histogram"] != df["Human"]].to_csv("histogramvshuman.csv", index=False)
+df[~((df["Histogram"] == df["GoniOwl"]) & (df["GoniOwl"] == df["Human"]))].to_csv("outputs/histogramvsgoniowlvshuman.csv", index=False)
+df[df["GoniOwl"] != df["Human"]].to_csv("outputs/goniowlvshuman.csv", index=False)
+df[df["Histogram"] != df["Human"]].to_csv("outputs/histogramvshuman.csv", index=False)
 
 
 histogram_human_same_goniowl_not = df[(df["Histogram"] == df["Human"]) & (df["GoniOwl"] != df["Human"])]
-histogram_human_same_goniowl_not.to_csv("histogram_human_same_goniowl_not.csv", index=False)
+histogram_human_same_goniowl_not.to_csv("outputs/histogram_human_same_goniowl_not.csv", index=False)
 
 goniowl_human_same_histogram_not = df[(df["GoniOwl"] == df["Human"]) & (df["Histogram"] != df["Human"])]
-goniowl_human_same_histogram_not.to_csv("goniowl_human_same_histogram_not.csv", index=False)
+goniowl_human_same_histogram_not.to_csv("outputs/goniowl_human_same_histogram_not.csv", index=False)
 
 histogram_human_same_goniowl_not["DateTime"] = pd.to_datetime(histogram_human_same_goniowl_not["DateTime"].str[:10])
 goniowl_human_same_histogram_not["DateTime"] = pd.to_datetime(goniowl_human_same_histogram_not["DateTime"].str[:10])
@@ -63,7 +64,7 @@ plt.show()
 disagree_df = df[df["GoniOwl"] != df["Human"]]
 
 # Create disagreements folder if it doesn't exist
-disagreements_dir = "disagreements"
+disagreements_dir = "outputs/disagreements"
 if not os.path.exists(disagreements_dir):
     os.makedirs(disagreements_dir)
 
