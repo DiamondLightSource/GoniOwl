@@ -51,6 +51,7 @@ dependencies = [
     "opt-einsum==3.4.0",
     "optree==0.18.0",
     "packaging==26.0",
+    "pandas==3.0.1",
     "pillow==12.1.0",
     "protobuf==6.33.4",
     "pygments==2.19.2",
