@@ -17,6 +17,9 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
+import keras
+from keras import Model
+from typing import cast
 
 def setup_logging(level: str = "INFO") -> logging.Logger:
     """Configure logging"""
@@ -38,7 +41,7 @@ def run_inference(
     """Run inference on all images in disagreement folder and display results."""
     
     logger.info("Loading model from: %s", model_path)
-    model = tf.keras.models.load_model(model_path)
+    model = cast(Model, keras.models.load_model(model_path))
     logger.info("Model loaded successfully.")
     
     os.makedirs(output_dir, exist_ok=True)
@@ -61,11 +64,11 @@ def run_inference(
         logger.info("[%d/%d] Processing: %s", idx, len(image_files), image_path.name)
         
         try:
-            img = tf.keras.utils.load_img(image_path, target_size=(img_height, img_width))
-            img_array = tf.keras.utils.img_to_array(img)
+            img = keras.utils.load_img(image_path, target_size=(img_height, img_width))
+            img_array = keras.utils.img_to_array(img)
             img_array = tf.expand_dims(img_array, 0)
             
-            prediction = model.predict(img_array, verbose=0)[0][0]
+            prediction = model.predict(img_array, verbose="0")[0][0]
             if prediction > 0.85:
                 class_label = "pin on"
             elif prediction < 0.15:
