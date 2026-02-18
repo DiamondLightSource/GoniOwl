@@ -44,7 +44,7 @@ class GoniOwlController:
         io_buf = BytesIO(buffer)
         return io_buf
 
-    def is_image_valid(self, img, low_thresh=40, high_thresh=215):
+    def is_image_valid(self, img, low_thresh=80, high_thresh=180):
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         mean_intensity = np.mean(gray)
         if mean_intensity < low_thresh or mean_intensity > high_thresh:
