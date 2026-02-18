@@ -8,6 +8,13 @@ src/Training/.ruff_cache
 src/Training/goniopin_*
 src/Training/test_*
 src/Training/outputs
+disagreements/
 src/Training/tensorflow_2.8.2-gpu-jupyter.sif
 *.egg-info
 __pycache__
+goniowl_human_same_histogram_not.csv
+GoniOwlMetrics_output.csv
+goniowlvshuman.csv
+histogram_human_same_goniowl_not.csv
+histogramvsgoniowlvshuman.csv
+histogramvshuman.csv
