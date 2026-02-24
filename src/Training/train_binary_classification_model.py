@@ -16,6 +16,9 @@ Example:
 
 import os
 import sys
+import io
+import json
+import zipfile
 import argparse
 import logging
 import matplotlib.pyplot as plt
@@ -56,6 +59,35 @@ def setup_logging(level: str = "INFO", log_file: Optional[str] = None) -> loggin
 
 
 logger = logging.getLogger(__name__)
+
+_KEYS_TO_STRIP = {"quantization_config"}
+
+
+def _strip_unsupported_keys_from_obj(obj):
+    """Recursively remove keys that break older Keras 3 versions."""
+    if isinstance(obj, dict):
+        return {k: _strip_unsupported_keys_from_obj(v) for k, v in obj.items() if k not in _KEYS_TO_STRIP}
+    if isinstance(obj, list):
+        return [_strip_unsupported_keys_from_obj(item) for item in obj]
+    return obj
+
+
+def _strip_unsupported_keys(keras_path: str) -> None:
+    """Patch a .keras file in-place to remove keys unsupported by older Keras 3."""
+    if not zipfile.is_zipfile(keras_path):
+        return
+    buf = io.BytesIO()
+    with zipfile.ZipFile(keras_path, "r") as zin, zipfile.ZipFile(buf, "w") as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename == "config.json":
+                config = json.loads(data)
+                config = _strip_unsupported_keys_from_obj(config)
+                data = json.dumps(config, indent=2).encode("utf-8")
+            zout.writestr(item, data)
+    with open(keras_path, "wb") as f:
+        f.write(buf.getvalue())
+    logger.info("Stripped unsupported keys %s from saved model.", _KEYS_TO_STRIP)
 
 
 class LoggingCallback(keras.callbacks.Callback):
@@ -457,6 +489,7 @@ def run(args: argparse.Namespace) -> None:
     )
     logger.info("Saving model to: %s", final_model_path)
     model.save(final_model_path)
+    _strip_unsupported_keys(final_model_path)
     logger.info("Model saved successfully.")
 
     y_true = []
