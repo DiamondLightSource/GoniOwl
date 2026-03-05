@@ -174,12 +174,12 @@ def predefined_model(img_height: int, img_width: int, learning_rate: float = 1e-
 def model_builder(hp: "kt.HyperParameters", img_height: int, img_width: int) -> keras.Model:
     """For tuning model with KerasTuner."""
     # Defaults mirror your predefined architecture
-    conv1 = hp.Int("conv1", min_value=16, max_value=64, step=8, default=20)
-    conv1_2 = hp.Int("conv1_2", min_value=24, max_value=96, step=8, default=44)
-    conv2 = hp.Int("conv2", min_value=16, max_value=64, step=8, default=24)
-    conv2_2 = hp.Int("conv2_2", min_value=24, max_value=96, step=8, default=48)
-    dense1 = hp.Int("dense_units_1", min_value=64, max_value=256, step=32, default=176)
-    dense2 = hp.Int("dense_units_2", min_value=32, max_value=128, step=32, default=64)
+    conv1 = hp.Int("conv1", min_value=16, max_value=256, step=8, default=20)
+    conv1_2 = hp.Int("conv1_2", min_value=24, max_value=256, step=8, default=44)
+    conv2 = hp.Int("conv2", min_value=16, max_value=256, step=8, default=24)
+    conv2_2 = hp.Int("conv2_2", min_value=24, max_value=256, step=8, default=48)
+    dense1 = hp.Int("dense_units_1", min_value=32, max_value=256, step=32, default=176)
+    dense2 = hp.Int("dense_units_2", min_value=32, max_value=256, step=32, default=64)
     learning_rate = hp.Choice("learning_rate", values=[5e-4, 1e-3, 2e-3], default=1e-3)
 
     model = Sequential()
