@@ -21,6 +21,10 @@ import logging
 import tempfile
 from pathlib import Path
 
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
+from tqdm import tqdm
+
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -140,11 +144,37 @@ def save_annotated_image(
     plt.close(fig)
 
 
+def _save_annotated_image_worker(args: tuple) -> None:
+    """Worker function for parallel image saving (runs in separate process)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    img_path, out_path, human, hist_decision, goniowl_decision, confidence_pct = args
+    img = plt.imread(img_path)
+    fig, ax = plt.subplots(figsize=(8, 7))
+    ax.imshow(img)
+    ax.axis("off")
+
+    info_text = (
+        f"Human: {human}    |    Histogram: {hist_decision}    |    "
+        f"GoniOwl: {goniowl_decision}    |    Confidence: {confidence_pct:.2f}%"
+    )
+    fig.text(0.5, 0.02, info_text, ha="center", fontsize=11, fontweight="bold",
+             bbox=dict(boxstyle="round,pad=0.4", facecolor="lightyellow", edgecolor="gray"))
+
+    plt.tight_layout(rect=[0, 0.06, 1, 1])
+    plt.savefig(out_path, dpi=100, bbox_inches="tight")
+    plt.close(fig)
+
+
 def run_inference_all(
     df: pd.DataFrame,
     model_path: str,
     img_height: int,
     img_width: int,
+    batch_size: int = 32,
+    max_workers: int | None = None,
 ) -> list[dict]:
     logger.info("Loading model from: %s", model_path)
     model = load_model(model_path)
@@ -152,48 +182,69 @@ def run_inference_all(
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    results = []
-    total = len(df)
-
-    for idx, (_, row) in enumerate(df.iterrows(), 1):
+    # Filter to existing images and collect metadata
+    rows = []
+    for _, row in df.iterrows():
         img_path = row["Image1"]
-        histogram_label = row["Histogram"]
-        human_label = row["Human"]
-
         if not os.path.exists(img_path):
-            logger.warning("[%d/%d] Image not found, skipping: %s", idx, total, img_path)
+            logger.warning("Image not found, skipping: %s", img_path)
+            continue
+        rows.append(row)
+
+    total = len(rows)
+    logger.info("Running batched inference on %d images (batch_size=%d).", total, batch_size)
+
+    results = []
+    save_tasks = []
+
+    # Process in batches for inference
+    for batch_start in range(0, total, batch_size):
+        batch_rows = rows[batch_start : batch_start + batch_size]
+        batch_end = batch_start + len(batch_rows)
+        logger.info("[%d-%d/%d] Loading and predicting batch...", batch_start + 1, batch_end, total)
+
+        # Load all images in this batch
+        img_arrays = []
+        valid_rows = []
+        for row in batch_rows:
+            try:
+                img = keras.utils.load_img(row["Image1"], target_size=(img_height, img_width))
+                img_arrays.append(keras.utils.img_to_array(img))
+                valid_rows.append(row)
+            except Exception as e:
+                logger.error("Error loading %s: %s", row["Image1"], e)
+
+        if not img_arrays:
             continue
 
-        logger.info("[%d/%d] Processing: %s", idx, total, img_path)
+        # Batch predict
+        batch_tensor = np.stack(img_arrays, axis=0)
+        predictions = model.predict(batch_tensor, verbose=0, batch_size=batch_size)
 
-        try:
-            img = keras.utils.load_img(img_path, target_size=(img_height, img_width))
-            img_array = keras.utils.img_to_array(img)
-            img_array = tf.expand_dims(img_array, 0)
+        for row, prediction in zip(valid_rows, predictions):
+            pred = float(prediction[0])
+            img_path = row["Image1"]
+            human_label = row["Human"]
+            histogram_label = row["Histogram"]
 
-            prediction = float(model.predict(img_array, verbose=0)[0][0])
-
-            if prediction > 0.85:
+            if pred > 0.5:
                 goniowl_decision = "on"
-            elif prediction < 0.15:
+            elif pred < 0.5:
                 goniowl_decision = "off"
             else:
                 goniowl_decision = "undetermined"
 
-            confidence = prediction if prediction > 0.5 else 1 - prediction
+            confidence = pred if pred > 0.5 else 1 - pred
             confidence_pct = round(confidence * 100, 2)
 
-            # Save annotated image
             original_name = os.path.basename(img_path)
             out_name = f"{confidence_pct:.2f}_{goniowl_decision}_{original_name}"
             out_path = os.path.join(OUTPUT_DIR, out_name)
-            save_annotated_image(
-                img_path, out_path,
-                human=human_label,
-                hist_decision=histogram_label,
-                goniowl_decision=goniowl_decision,
-                confidence_pct=confidence_pct,
-            )
+
+            save_tasks.append((
+                img_path, out_path, human_label, histogram_label,
+                goniowl_decision, confidence_pct,
+            ))
 
             results.append({
                 "image_name": original_name,
@@ -203,13 +254,15 @@ def run_inference_all(
                 "goniowl_confidence": confidence_pct,
             })
 
-            logger.info(
-                "  Human=%s, Histogram=%s, GoniOwl=%s (confidence=%.2f%%)",
-                human_label, histogram_label, goniowl_decision, confidence_pct,
-            )
-
-        except Exception as e:
-            logger.error("Error processing %s: %s", img_path, e)
+    # Save annotated images in parallel
+    logger.info("Saving %d annotated images in parallel...", len(save_tasks))
+    with ProcessPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_save_annotated_image_worker, task): task[1] for task in save_tasks}
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Saving images"):
+            try:
+                future.result()
+            except Exception as e:
+                logger.error("Error saving %s: %s", futures[future], e)
 
     return results
 
@@ -263,6 +316,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-path", required=True, help="Path to the trained model.")
     parser.add_argument("--img-height", type=int, default=152, help="Image height for inference.")
     parser.add_argument("--img-width", type=int, default=218, help="Image width for inference.")
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size for inference.")
+    parser.add_argument("--max-workers", type=int, default=None, help="Max parallel workers for saving images.")
     return parser.parse_args()
 
 
@@ -281,6 +336,8 @@ if __name__ == "__main__":
             model_path=args.model_path,
             img_height=args.img_height,
             img_width=args.img_width,
+            batch_size=args.batch_size,
+            max_workers=args.max_workers,
         )
         save_csv(results)
         generate_confidence_histograms(results)

@@ -3,7 +3,7 @@ venv
 .vscode
 outputs
 src/Training/.nv
-src/training_output
+src/training_output/*
 src/Training/.keras
 src/Training/.ruff_cache
 src/Training/goniopin_*
