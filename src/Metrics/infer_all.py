@@ -282,8 +282,9 @@ def save_csv(results: list[dict]) -> None:
     logger.info("CSV saved to: %s", csv_path)
 
 
-def generate_confidence_histograms(results: list[dict]) -> None:
+def generate_confidence_histograms(results: list[dict], output_dir: str = OUTPUT_DIR) -> None:
     """Generate separate confidence histograms split by human decision."""
+    os.makedirs(output_dir, exist_ok=True)
     pin_on_conf = [r["goniowl_confidence"] for r in results if r["human_decision"] == "on"]
     pin_off_conf = [r["goniowl_confidence"] for r in results if r["human_decision"] == "off"]
 
@@ -299,11 +300,12 @@ def generate_confidence_histograms(results: list[dict]) -> None:
         ax.hist(confidences, bins=20, range=(50, 100), color=color, edgecolor="black", alpha=0.85)
         ax.set_title(f"GoniOwl Confidence Distribution - {label}", fontsize=14)
         ax.set_xlabel("Confidence (%)")
+        ax.set_yscale("log")
         ax.set_ylabel("Count")
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
 
-        hist_path = os.path.join(OUTPUT_DIR, f"confidence_histogram_{label}.png")
+        hist_path = os.path.join(output_dir, f"confidence_histogram_{label}.png")
         plt.savefig(hist_path, dpi=120)
         plt.close(fig)
         logger.info("Confidence histogram saved: %s", hist_path)
@@ -313,7 +315,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run fresh GoniOwl inference on all logged ECAM_6 images."
     )
-    parser.add_argument("--model-path", required=True, help="Path to the trained model.")
+    parser.add_argument("--model-path", default=None, help="Path to the trained model.")
+    parser.add_argument("--histograms-only", action="store_true",
+                        help="Regenerate histograms from existing CSV without running inference.")
+    parser.add_argument("--run-path", default=None,
+                        help="Path to a run directory (e.g. outputs/inferall_modelid). Used with --histograms-only.")
     parser.add_argument("--img-height", type=int, default=152, help="Image height for inference.")
     parser.add_argument("--img-width", type=int, default=218, help="Image width for inference.")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size for inference.")
@@ -324,21 +330,30 @@ def parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = parse_args()
 
-    if not os.path.exists(args.model_path):
-        raise FileNotFoundError(f"Model not found: {args.model_path}")
-
-    df = load_log_data()
-    if df.empty:
-        logger.info("No data found. Nothing to do.")
+    if args.histograms_only:
+        run_dir = args.run_path or OUTPUT_DIR
+        csv_path = os.path.join(run_dir, "infer_all_results.csv")
+        if not os.path.exists(csv_path):
+            raise FileNotFoundError(f"No existing results CSV found at: {csv_path}")
+        results = pd.read_csv(csv_path).to_dict("records")
+        logger.info("Loaded %d results from %s", len(results), csv_path)
+        generate_confidence_histograms(results, output_dir=run_dir)
     else:
-        results = run_inference_all(
-            df,
-            model_path=args.model_path,
-            img_height=args.img_height,
-            img_width=args.img_width,
-            batch_size=args.batch_size,
-            max_workers=args.max_workers,
-        )
-        save_csv(results)
-        generate_confidence_histograms(results)
-        logger.info("Done. Total processed: %d images.", len(results))
+        if not args.model_path or not os.path.exists(args.model_path):
+            raise FileNotFoundError(f"Model not found: {args.model_path}")
+
+        df = load_log_data()
+        if df.empty:
+            logger.info("No data found. Nothing to do.")
+        else:
+            results = run_inference_all(
+                df,
+                model_path=args.model_path,
+                img_height=args.img_height,
+                img_width=args.img_width,
+                batch_size=args.batch_size,
+                max_workers=args.max_workers,
+            )
+            save_csv(results)
+            generate_confidence_histograms(results)
+            logger.info("Done. Total processed: %d images.", len(results))
