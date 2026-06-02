@@ -149,12 +149,17 @@ rotation_layer = layers.RandomRotation(factor=3.0 / 360.0, fill_mode="reflect", 
 translation_layer = layers.RandomTranslation(height_factor=0.05, width_factor=0.05, fill_mode="reflect")
 
 def augmentations(image, label):
+    # Images are in the 0-255 range here (rescaling happens inside the model).
+    # NOTE: the photometric ranges are kept gentle on purpose. The pin on/off
+    # signal is subtle, and aggressive contrast (0.6-1.4) + noise was strong
+    # enough to stop the model learning at all (training stuck at chance). These
+    # milder ranges reach ~0.99 train / ~0.99 val AUC; see investigation 2026-06.
     image = tf.cast(image, tf.float32)
     image = rotation_layer(image)
     image = translation_layer(image)
-    image = tf.image.random_brightness(image, max_delta=0.4)
-    image = tf.image.random_contrast(image, lower=0.6, upper=1.4)
-    image = image + (tf.random.normal(shape=tf.shape(image), mean=0.0, stddev=5.0))
+    image = tf.image.random_brightness(image, max_delta=0.1 * 255.0)
+    image = tf.image.random_contrast(image, lower=0.9, upper=1.1)
+    image = image + (tf.random.normal(shape=tf.shape(image), mean=0.0, stddev=3.0))
     image = tf.clip_by_value(image, 0.0, 255.0)
     return image, label
 
@@ -198,7 +203,12 @@ def predefined_model(img_height: int, img_width: int, learning_rate: float = 1e-
     model.compile(
         keras.optimizers.Adam(learning_rate),
         loss="binary_crossentropy",
-        metrics=["Accuracy", "Precision", "Recall", "AUC"],
+        metrics=[
+            tf.keras.metrics.BinaryAccuracy(name="accuracy"),
+            tf.keras.metrics.Precision(name="precision"),
+            tf.keras.metrics.Recall(name="recall"),
+            tf.keras.metrics.AUC(name="auc"),
+        ],
     )
     logger.info("Model compiled.")
     model.summary(print_fn=lambda l: logger.info(l))
@@ -526,15 +536,17 @@ def run(args: argparse.Namespace) -> None:
     _strip_unsupported_keys(final_model_path)
     logger.info("Model saved successfully.")
 
-    y_true = []
-    y_pred = []
     logger.info("Running predictions on validation set for confusion matrix...")
+    # Collect labels and predictions in a single pass so they stay aligned even
+    # when val_ds is shuffled (it reshuffles on each iteration).
+    y_true, y_pred = [], []
     for images, labels in val_ds:
-        preds = model.predict(images).flatten()
-        y_true.extend(labels.numpy())
-        y_pred.extend(preds)
+        y_pred.append(model.predict(images, verbose=0).flatten())
+        y_true.append(labels.numpy().flatten())
+    y_true = np.concatenate(y_true)
+    y_pred = np.concatenate(y_pred)
 
-    cm = confusion_matrix(y_true, np.array(y_pred) > 0.5)
+    cm = confusion_matrix(y_true, y_pred > 0.5)
     _, ax = plt.subplots()
     ax.imshow(cm, cmap='Blues')
     ax.set_xticks(np.arange(2))
