@@ -17,11 +17,6 @@ Example:
 import os
 import sys
 
-# Ensure the CUDA libraries bundled in the nvidia-*-cu12 wheels are on the
-# loader path *before* TensorFlow is imported. Other libraries (e.g. cv2) can
-# clobber LD_LIBRARY_PATH, which stops TF from finding libcusolver.so.11 etc.
-# and silently drops it to CPU. We prepend the wheel lib dirs and re-exec once
-# so the dynamic linker actually picks them up.
 def _ensure_cuda_libpath():
     if os.environ.get("_GONIOWL_CUDA_LIBPATH") == "1":
         return
@@ -45,7 +40,6 @@ def _ensure_cuda_libpath():
     existing = os.environ.get("LD_LIBRARY_PATH", "")
     os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(lib_dirs + ([existing] if existing else []))
     os.environ["_GONIOWL_CUDA_LIBPATH"] = "1"
-    # Re-exec so LD_LIBRARY_PATH is read by the dynamic linker at startup.
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 _ensure_cuda_libpath()
@@ -149,11 +143,6 @@ rotation_layer = layers.RandomRotation(factor=3.0 / 360.0, fill_mode="reflect", 
 translation_layer = layers.RandomTranslation(height_factor=0.05, width_factor=0.05, fill_mode="reflect")
 
 def augmentations(image, label):
-    # Images are in the 0-255 range here (rescaling happens inside the model).
-    # NOTE: the photometric ranges are kept gentle on purpose. The pin on/off
-    # signal is subtle, and aggressive contrast (0.6-1.4) + noise was strong
-    # enough to stop the model learning at all (training stuck at chance). These
-    # milder ranges reach ~0.99 train / ~0.99 val AUC; see investigation 2026-06.
     image = tf.cast(image, tf.float32)
     image = rotation_layer(image)
     image = translation_layer(image)
@@ -170,13 +159,39 @@ def save_sample_images(dataset: tf.data.Dataset, tmpdir: str):
     os.makedirs(sample_dir, exist_ok=True)
     for images, labels in dataset.take(1):
         for i in range(min(20, len(images))):
-            # labels[i] is shape (1,) for label_mode="binary"; .item() -> scalar.
             label = int(labels[i].numpy().item())
             plt.imshow(images[i].numpy().astype("uint8"))
             plt.title(f"Label: {label}")
             plt.axis("off")
             plt.savefig(os.path.join(sample_dir, f"sample_{i}_label_{label}.png"))
             plt.close()
+
+
+def plot_training_curves(history, tmpdir: str):
+    """Plot training vs validation loss and accuracy over epochs."""
+    hist = history.history
+    epochs = range(1, len(hist.get("loss", [])) + 1)
+    fig, (ax_loss, ax_acc) = plt.subplots(1, 2, figsize=(12, 5))
+
+    if "loss" in hist:
+        ax_loss.plot(epochs, hist["loss"], label="train")
+    if "val_loss" in hist:
+        ax_loss.plot(epochs, hist["val_loss"], label="validation")
+    ax_loss.set_title("Loss")
+    ax_loss.set_xlabel("Epoch"); ax_loss.set_ylabel("Loss"); ax_loss.legend()
+
+    if "accuracy" in hist:
+        ax_acc.plot(epochs, hist["accuracy"], label="train")
+    if "val_accuracy" in hist:
+        ax_acc.plot(epochs, hist["val_accuracy"], label="validation")
+    ax_acc.set_title("Accuracy")
+    ax_acc.set_xlabel("Epoch"); ax_acc.set_ylabel("Accuracy"); ax_acc.legend()
+
+    fig.tight_layout()
+    out_path = os.path.join(tmpdir, "training_curves.png")
+    fig.savefig(out_path)
+    plt.close(fig)
+    logger.info("Training curves saved to: %s", out_path)
 
 
 def predefined_model(img_height: int, img_width: int, learning_rate: float = 1e-3) -> keras.Model:
@@ -186,8 +201,6 @@ def predefined_model(img_height: int, img_width: int, learning_rate: float = 1e-
     model.add(layers.InputLayer(input_shape=(img_height, img_width, 3)))
     model.add(layers.Rescaling(1.0 / 255))
 
-    # Conv/Dense layers feeding into BatchNorm use use_bias=False: the bias is
-    # redundant because BatchNorm re-centres the activations anyway.
     model.add(layers.Conv2D(20, 3, padding="same", use_bias=False))
     model.add(layers.BatchNormalization())
     model.add(layers.Activation("silu"))
@@ -234,7 +247,6 @@ def predefined_model(img_height: int, img_width: int, learning_rate: float = 1e-
 
 def model_builder(hp: "kt.HyperParameters", img_height: int, img_width: int) -> keras.Model:
     """For tuning model with KerasTuner."""
-    # Defaults mirror your predefined architecture
     conv1 = hp.Int("conv1", min_value=16, max_value=256, step=8, default=20)
     conv1_2 = hp.Int("conv1_2", min_value=24, max_value=256, step=8, default=44)
     conv2 = hp.Int("conv2", min_value=16, max_value=256, step=8, default=24)
@@ -318,7 +330,6 @@ def build_datasets(
         unique, counts = np.unique(all_labels, return_counts=True)
         logger.info("Training class split: %s", dict(zip(unique, counts)))
         save_sample_images(train_ds, tmpdir)
-        train_ds = train_ds.map(augmentations, num_parallel_calls=tf.data.AUTOTUNE)
         val_ds = tf.keras.utils.image_dataset_from_directory(
             val_dir,
             label_mode="binary",
@@ -351,7 +362,6 @@ def build_datasets(
         unique, counts = np.unique(all_labels, return_counts=True)
         logger.info("Training class split: %s", dict(zip(unique, counts)))
         save_sample_images(train_ds, tmpdir)
-        train_ds = train_ds.map(augmentations, num_parallel_calls=tf.data.AUTOTUNE)
         val_ds = tf.keras.utils.image_dataset_from_directory(
             train_dir,
             label_mode="binary",
@@ -369,7 +379,17 @@ def build_datasets(
 
     logger.info("Classes: %s", class_names)
 
-    train_ds = train_ds.cache().prefetch(buffer_size=AUTOTUNE)
+    # Pipeline order matters: cache the *raw* (un-augmented) images, then shuffle
+    # and augment on every epoch. Caching the augmented stream (the previous
+    # behaviour) froze both the example order and the random augmentation, so the
+    # network saw the identical batches every epoch — a likely cause of the
+    # "validation better than training" anomaly on this small dataset.
+    train_ds = (
+        train_ds.cache()
+        .shuffle(buffer_size=1000, reshuffle_each_iteration=True)
+        .map(augmentations, num_parallel_calls=AUTOTUNE)
+        .prefetch(buffer_size=AUTOTUNE)
+    )
     val_ds = val_ds.cache().prefetch(buffer_size=AUTOTUNE)
     return train_ds, val_ds, class_names
 
@@ -522,6 +542,7 @@ def run(args: argparse.Namespace) -> None:
     )
     logger.info("Training finished. Final val_accuracy=%.4f.",
                 history.history.get("val_accuracy", [float("nan")])[-1])
+    plot_training_curves(history, tmpdir)
 
     final_model_path = os.path.join(
         tmpdir,
@@ -569,7 +590,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-split", type=float, default=0.3, help="Validation split (0-1) if --val-dir not provided.")
     parser.add_argument("--img-height", type=int, default=764, help="Input image height.")
     parser.add_argument("--img-width", type=int, default=1092, help="Input image width.")
-    parser.add_argument("--batch-size", type=int, default=4, help="Batch size.")
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size. Values of 16-64 work well; very small (e.g. 4) hurt training on this small dataset, and >=128 starts to degrade.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
 
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs.")
