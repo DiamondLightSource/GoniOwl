@@ -164,6 +164,21 @@ def augmentations(image, label):
     return image, label
 
 
+def save_sample_images(dataset: tf.data.Dataset, tmpdir: str):
+    """Save a batch of sample images to disk for visual inspection."""
+    sample_dir = os.path.join(tmpdir, "sample_images")
+    os.makedirs(sample_dir, exist_ok=True)
+    for images, labels in dataset.take(1):
+        for i in range(min(20, len(images))):
+            # labels[i] is shape (1,) for label_mode="binary"; .item() -> scalar.
+            label = int(labels[i].numpy().item())
+            plt.imshow(images[i].numpy().astype("uint8"))
+            plt.title(f"Label: {label}")
+            plt.axis("off")
+            plt.savefig(os.path.join(sample_dir, f"sample_{i}_label_{label}.png"))
+            plt.close()
+
+
 def predefined_model(img_height: int, img_width: int, learning_rate: float = 1e-3) -> keras.Model:
     """Predetermined model architecture."""
     logger.info("Building predefined model...")
@@ -171,19 +186,21 @@ def predefined_model(img_height: int, img_width: int, learning_rate: float = 1e-
     model.add(layers.InputLayer(input_shape=(img_height, img_width, 3)))
     model.add(layers.Rescaling(1.0 / 255))
 
-    model.add(layers.Conv2D(20, 3, padding="same"))
+    # Conv/Dense layers feeding into BatchNorm use use_bias=False: the bias is
+    # redundant because BatchNorm re-centres the activations anyway.
+    model.add(layers.Conv2D(20, 3, padding="same", use_bias=False))
     model.add(layers.BatchNormalization())
     model.add(layers.Activation("silu"))
-    model.add(layers.Conv2D(44, (3, 3)))
+    model.add(layers.Conv2D(44, (3, 3), use_bias=False))
     model.add(layers.BatchNormalization())
     model.add(layers.Activation("silu"))
     model.add(layers.MaxPooling2D(pool_size=(2, 2)))
     model.add(layers.Dropout(0.25))
 
-    model.add(layers.Conv2D(24, (3, 3), padding="same"))
+    model.add(layers.Conv2D(24, (3, 3), padding="same", use_bias=False))
     model.add(layers.BatchNormalization())
     model.add(layers.Activation("silu"))
-    model.add(layers.Conv2D(48, (3, 3)))
+    model.add(layers.Conv2D(48, (3, 3), use_bias=False))
     model.add(layers.BatchNormalization())
     model.add(layers.Activation("silu"))
     model.add(layers.MaxPooling2D(pool_size=(2, 2)))
@@ -191,10 +208,10 @@ def predefined_model(img_height: int, img_width: int, learning_rate: float = 1e-
 
     model.add(layers.GlobalAveragePooling2D())
 
-    model.add(layers.Dense(176, activation="silu"))
+    model.add(layers.Dense(176, activation="silu", use_bias=False))
     model.add(layers.BatchNormalization())
     model.add(layers.Dropout(0.4))
-    model.add(layers.Dense(64, activation="silu"))
+    model.add(layers.Dense(64, activation="silu", use_bias=False))
     model.add(layers.BatchNormalization())
     model.add(layers.Dropout(0.4))
 
@@ -230,19 +247,19 @@ def model_builder(hp: "kt.HyperParameters", img_height: int, img_width: int) -> 
     model.add(layers.InputLayer(input_shape=(img_height, img_width, 3)))
     model.add(layers.Rescaling(1.0 / 255))
 
-    model.add(layers.Conv2D(conv1, 3, padding="same"))
+    model.add(layers.Conv2D(conv1, 3, padding="same", use_bias=False))
     model.add(layers.BatchNormalization())
     model.add(layers.Activation("silu"))
-    model.add(layers.Conv2D(conv1_2, (3, 3)))
+    model.add(layers.Conv2D(conv1_2, (3, 3), use_bias=False))
     model.add(layers.BatchNormalization())
     model.add(layers.Activation("silu"))
     model.add(layers.MaxPooling2D(pool_size=(2, 2)))
     model.add(layers.Dropout(0.25))
 
-    model.add(layers.Conv2D(conv2, (3, 3), padding="same"))
+    model.add(layers.Conv2D(conv2, (3, 3), padding="same", use_bias=False))
     model.add(layers.BatchNormalization())
     model.add(layers.Activation("silu"))
-    model.add(layers.Conv2D(conv2_2, (3, 3)))
+    model.add(layers.Conv2D(conv2_2, (3, 3), use_bias=False))
     model.add(layers.BatchNormalization())
     model.add(layers.Activation("silu"))
     model.add(layers.MaxPooling2D(pool_size=(2, 2)))
@@ -250,10 +267,10 @@ def model_builder(hp: "kt.HyperParameters", img_height: int, img_width: int) -> 
 
     model.add(layers.GlobalAveragePooling2D())
 
-    model.add(layers.Dense(dense1, activation="silu"))
+    model.add(layers.Dense(dense1, activation="silu", use_bias=False))
     model.add(layers.BatchNormalization())
     model.add(layers.Dropout(0.4))
-    model.add(layers.Dense(dense2, activation="silu"))
+    model.add(layers.Dense(dense2, activation="silu", use_bias=False))
     model.add(layers.BatchNormalization())
     model.add(layers.Dropout(0.4))
 
@@ -281,14 +298,14 @@ def build_datasets(
     img_width: int,
     batch_size: int,
     seed: int,
+    tmpdir: str,
     val_dir: Optional[str] = None,
     val_split: float = 0.0,
 ) -> Tuple[tf.data.Dataset, tf.data.Dataset, List[str]]:
     """Create train/val datasets from directories."""
-    logger.info("Using image size for taining: %dx%d", img_height, img_width)
+    logger.info("Using image size for training: %dx%d", img_height, img_width)
     if val_dir:
         logger.info("Using explicit validation directory: %s", val_dir)
-        all_labels = []
         train_ds = tf.keras.utils.image_dataset_from_directory(
             train_dir,
             label_mode="binary",
@@ -297,20 +314,11 @@ def build_datasets(
             shuffle=True,
             seed=seed,
         )
-        for images, labels in train_ds:
-            all_labels.extend(labels.numpy())
+        all_labels = np.concatenate([y.numpy() for _, y in train_ds])
         unique, counts = np.unique(all_labels, return_counts=True)
-        logger.info(f"Training class split: {dict(zip(unique, counts))}")
-        os.makedirs(f"{args.tmpdir}/sample_images", exist_ok=True)
-        for images, labels in train_ds.take(1):
-            for i in range(min(20, len(images))):
-                plt.imshow(images[i].numpy().astype("uint8"))
-                plt.title(f"Label: {labels[i].numpy()}")
-                plt.axis("off")
-                plt.savefig(f"{args.tmpdir}/sample_images/sample_{i}_label_{int(labels[i].numpy().item())}.png")
-                plt.close()   
+        logger.info("Training class split: %s", dict(zip(unique, counts)))
+        save_sample_images(train_ds, tmpdir)
         train_ds = train_ds.map(augmentations, num_parallel_calls=tf.data.AUTOTUNE)
-        all_labels = []
         val_ds = tf.keras.utils.image_dataset_from_directory(
             val_dir,
             label_mode="binary",
@@ -319,10 +327,9 @@ def build_datasets(
             shuffle=False,
             seed=seed,
         )
-        for images, labels in val_ds:
-            all_labels.extend(labels.numpy())
-        unique, counts = np.unique(all_labels, return_counts=True)
-        logger.info(f"Validation class split: {dict(zip(unique, counts))}")
+        all_val_labels = np.concatenate([y.numpy() for _, y in val_ds])
+        val_unique, val_counts = np.unique(all_val_labels, return_counts=True)
+        logger.info("Validation class split: %s", dict(zip(val_unique, val_counts)))
         class_names = val_ds.class_names
         logger.info("Training samples: %d, Validation samples: %d", len(train_ds)*batch_size, len(val_ds)*batch_size)
         logger.info("Classes: %s", class_names)
@@ -330,7 +337,6 @@ def build_datasets(
         if not (0.0 < val_split < 1.0):
             raise ValueError("When --val-dir is not provided, you must set --val-split in (0,1).")
         logger.info("Using train/validation split from: %s (val_split=%.2f)", train_dir, val_split)
-        all_labels = []     
         train_ds = tf.keras.utils.image_dataset_from_directory(
             train_dir,
             label_mode="binary",
@@ -341,20 +347,11 @@ def build_datasets(
             shuffle=True,
             seed=seed,
         )
-        for images, labels in train_ds:
-            all_labels.extend(labels.numpy())
+        all_labels = np.concatenate([y.numpy() for _, y in train_ds])
         unique, counts = np.unique(all_labels, return_counts=True)
-        logger.info(f"Training class split: {dict(zip(unique, counts))}")
-        os.makedirs(f"{args.tmpdir}/sample_images", exist_ok=True)
-        for images, labels in train_ds.take(1):
-            for i in range(min(20, len(images))):
-                plt.imshow(images[i].numpy().astype("uint8"))
-                plt.title(f"Label: {labels[i].numpy()}")
-                plt.axis("off")
-                plt.savefig(f"{args.tmpdir}/sample_images/sample_{i}_label_{int(labels[i].numpy().item())}.png")
-                plt.close()   
+        logger.info("Training class split: %s", dict(zip(unique, counts)))
+        save_sample_images(train_ds, tmpdir)
         train_ds = train_ds.map(augmentations, num_parallel_calls=tf.data.AUTOTUNE)
-        all_labels = []
         val_ds = tf.keras.utils.image_dataset_from_directory(
             train_dir,
             label_mode="binary",
@@ -365,10 +362,9 @@ def build_datasets(
             shuffle=True,
             seed=seed,
         )
-        for images, labels in val_ds:
-            all_labels.extend(labels.numpy())
-        unique, counts = np.unique(all_labels, return_counts=True)
-        logger.info(f"Validation class split: {dict(zip(unique, counts))}")
+        all_val_labels = np.concatenate([y.numpy() for _, y in val_ds])
+        val_unique, val_counts = np.unique(all_val_labels, return_counts=True)
+        logger.info("Validation class split: %s", dict(zip(val_unique, val_counts)))
         class_names = val_ds.class_names
 
     logger.info("Classes: %s", class_names)
@@ -398,6 +394,7 @@ def run(args: argparse.Namespace) -> None:
         img_width=int(args.img_width / args.image_divider),
         batch_size=args.batch_size,
         seed=args.seed,
+        tmpdir=tmpdir,
         val_split=args.val_split,
     )
 
