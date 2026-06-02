@@ -16,6 +16,40 @@ Example:
 
 import os
 import sys
+
+# Ensure the CUDA libraries bundled in the nvidia-*-cu12 wheels are on the
+# loader path *before* TensorFlow is imported. Other libraries (e.g. cv2) can
+# clobber LD_LIBRARY_PATH, which stops TF from finding libcusolver.so.11 etc.
+# and silently drops it to CPU. We prepend the wheel lib dirs and re-exec once
+# so the dynamic linker actually picks them up.
+def _ensure_cuda_libpath():
+    if os.environ.get("_GONIOWL_CUDA_LIBPATH") == "1":
+        return
+    try:
+        import site
+        site_pkgs = site.getsitepackages()
+    except Exception:
+        site_pkgs = []
+    lib_dirs = []
+    for sp in site_pkgs:
+        nvidia_root = os.path.join(sp, "nvidia")
+        if not os.path.isdir(nvidia_root):
+            continue
+        for pkg in sorted(os.listdir(nvidia_root)):
+            libdir = os.path.join(nvidia_root, pkg, "lib")
+            if os.path.isdir(libdir):
+                lib_dirs.append(libdir)
+    if not lib_dirs:
+        os.environ["_GONIOWL_CUDA_LIBPATH"] = "1"
+        return
+    existing = os.environ.get("LD_LIBRARY_PATH", "")
+    os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(lib_dirs + ([existing] if existing else []))
+    os.environ["_GONIOWL_CUDA_LIBPATH"] = "1"
+    # Re-exec so LD_LIBRARY_PATH is read by the dynamic linker at startup.
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+_ensure_cuda_libpath()
+
 import io
 import json
 import zipfile
