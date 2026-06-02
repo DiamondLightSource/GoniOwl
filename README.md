@@ -26,11 +26,11 @@ The `-e` flag installs the package in editable mode, allowing you to modify the 
 ### Using UV
 - Make uv venv `uv venv`
 - Activate uv venv `source .venv/bin/activate`
-- Install required modules `uv pip install tqdm matplotlib scikit-learn numpy opencv-python tensorflow[and-cuda]`
+- Install required modules `uv pip install tqdm matplotlib scikit-learn numpy keras-tuner tensorboard opencv-python tensorflow[and-cuda]`
 - Alter the script import_crop_save.py depending on the directory structure of your input images.
 - Run `python src/Training/import_crop_save.py --snapshots /path/to/snapshots --imgdir /path/to/save/cropped/images`
 - Check images in output folders manually
-- Run training `python src/Training/train_binary_classification_model.py --train_dir /path/to/save/cropped/images --tune`
+- Run training `python src/Training/train_binary_classification_model.py --train-dir /path/to/save/cropped/images --tune`
 
 ### Using python/pip
 - Create python venv `python -m venv .venv`
@@ -124,3 +124,7 @@ Evaluated on a held-out test set with manually verified labels. Over a 3-month d
 Raw training images: 10.5281/zenodo.17047675
 
 Singularity build used for training: 10.5281/zenodo.17047767
+
+# Issues
+- **cv2 clobbers CUDA libpath** — TF drops to CPU because cv2 overrides `LD_LIBRARY_PATH`, hiding the bundled CUDA libs (e.g. `libcusolver`). Fixed by a re-exec guard at the top of the training script that prepends the `nvidia/*/lib` wheel dirs before importing TensorFlow.
+- **Keep augmentation gentle** — the pin on/off signal is subtle; overly aggressive photometric augmentation (e.g. contrast 0.6–1.4) stops the model learning entirely (training stuck at chance). The current `augmentations()` ranges are tuned to reach ~0.99 validation accuracy.
