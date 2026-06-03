@@ -247,12 +247,12 @@ def predefined_model(img_height: int, img_width: int, learning_rate: float = 1e-
 
 def model_builder(hp: "kt.HyperParameters", img_height: int, img_width: int) -> keras.Model:
     """For tuning model with KerasTuner."""
-    conv1 = hp.Int("conv1", min_value=16, max_value=256, step=8, default=20)
-    conv1_2 = hp.Int("conv1_2", min_value=24, max_value=256, step=8, default=44)
-    conv2 = hp.Int("conv2", min_value=16, max_value=256, step=8, default=24)
-    conv2_2 = hp.Int("conv2_2", min_value=24, max_value=256, step=8, default=48)
-    dense1 = hp.Int("dense_units_1", min_value=32, max_value=256, step=32, default=176)
-    dense2 = hp.Int("dense_units_2", min_value=32, max_value=256, step=32, default=64)
+    conv1 = hp.Int("conv1", min_value=16, max_value=128, step=8, default=20)
+    conv1_2 = hp.Int("conv1_2", min_value=24, max_value=128, step=8, default=44)
+    conv2 = hp.Int("conv2", min_value=16, max_value=128, step=8, default=24)
+    conv2_2 = hp.Int("conv2_2", min_value=24, max_value=128, step=8, default=48)
+    dense1 = hp.Int("dense_units_1", min_value=32, max_value=200, step=32, default=176)
+    dense2 = hp.Int("dense_units_2", min_value=32, max_value=200, step=32, default=64)
     learning_rate = hp.Choice("learning_rate", values=[5e-4, 1e-3, 2e-3], default=1e-3)
 
     model = Sequential()
@@ -473,7 +473,7 @@ def run(args: argparse.Namespace) -> None:
             train_ds,
             epochs=args.tune_search_epochs,
             validation_data=val_ds,
-            callbacks=[tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=args.es_patience)],
+            callbacks=[tf.keras.callbacks.EarlyStopping(monitor="val_auc", mode="max", patience=args.es_patience)],
         )
         K.clear_session()
         logger.info("Hyperparameter search finished.")
@@ -512,7 +512,12 @@ def run(args: argparse.Namespace) -> None:
             save_weights_only=False,
         ),
         tf.keras.callbacks.ReduceLROnPlateau(
-            monitor="val_loss", factor=0.1, patience=args.plateau_patience, verbose=1
+            # Monitor val_auc (mode="max"), NOT val_loss: on this small dataset
+            # val_loss/val_accuracy swing wildly from epoch to epoch (BatchNorm
+            # running-stat noise), while val_auc is stable ~0.998. Monitoring
+            # val_loss made the scheduler slash the LR on noise and freeze the
+            # model at the majority-class baseline. See investigation 2026-06-03.
+            monitor="val_auc", mode="max", factor=0.1, patience=args.plateau_patience, verbose=1
         ),
         tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1, update_freq="batch"),
         keras.callbacks.CSVLogger(csv_log_path),
@@ -522,7 +527,8 @@ def run(args: argparse.Namespace) -> None:
     if args.early_stopping:
         callbacks.append(
             tf.keras.callbacks.EarlyStopping(
-                monitor="val_loss",
+                monitor="val_auc",
+                mode="max",
                 patience=args.es_patience,
                 restore_best_weights=True,
                 verbose=1,
