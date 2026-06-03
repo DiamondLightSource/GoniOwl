@@ -167,7 +167,7 @@ def save_sample_images(dataset: tf.data.Dataset, tmpdir: str):
             plt.close()
 
 
-def plot_training_curves(history, tmpdir: str):
+def plot_training_curves(history, tmpdir: str, name_suffix: str = ""):
     """Plot training vs validation loss and accuracy over epochs."""
     hist = history.history
     epochs = range(1, len(hist.get("loss", [])) + 1)
@@ -188,7 +188,8 @@ def plot_training_curves(history, tmpdir: str):
     ax_acc.set_xlabel("Epoch"); ax_acc.set_ylabel("Accuracy"); ax_acc.legend()
 
     fig.tight_layout()
-    out_path = os.path.join(tmpdir, "training_curves.png")
+    fname = f"training_curves_{name_suffix}.png" if name_suffix else "training_curves.png"
+    out_path = os.path.join(tmpdir, fname)
     fig.savefig(out_path)
     plt.close(fig)
     logger.info("Training curves saved to: %s", out_path)
@@ -548,7 +549,7 @@ def run(args: argparse.Namespace) -> None:
     )
     logger.info("Training finished. Final val_accuracy=%.4f.",
                 history.history.get("val_accuracy", [float("nan")])[-1])
-    plot_training_curves(history, tmpdir)
+    plot_training_curves(history, tmpdir, name_suffix=now_string)
 
     final_model_path = os.path.join(
         tmpdir,
@@ -585,7 +586,7 @@ def run(args: argparse.Namespace) -> None:
     ax.set_xlabel("Predicted Label")
     ax.set_ylabel("True Label")
     plt.tight_layout()
-    plt.savefig(f"{args.tmpdir}/confusionmatrix.png")
+    plt.savefig(os.path.join(tmpdir, f"confusionmatrix_{now_string}.png"))
     plt.close()
 
 def parse_args() -> argparse.Namespace:
