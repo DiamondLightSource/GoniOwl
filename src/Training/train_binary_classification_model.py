@@ -8,7 +8,7 @@ Example:
     --val-dir /data/val \
     --tmpdir ./outputs \
     --img-height 224 --img-width 224 \
-    --batch-size 32 --epochs 50 \
+    --batch-size 8 --epochs 50 \
     --log-level INFO --log-file ./outputs/run.log \
     --parallel \
     --tune
@@ -196,22 +196,18 @@ def plot_training_curves(history, tmpdir: str, name_suffix: str = ""):
 
 
 def predefined_model(img_height: int, img_width: int, learning_rate: float = 1e-3) -> keras.Model:
-    """Predetermined model architecture."""
+    """Predetermined model architecture.
+
+    Defaults are the hyperparameters found by the Hyperband search for the
+    batch-16 / seed-0 run (the manuscript model): conv1=16, conv1_2=48, conv2=16,
+    conv2_2=96, dense_units_1=96, dense_units_2=128, lr=1e-3 (~51,313 params).
+    """
     logger.info("Building predefined model...")
     model = Sequential()
     model.add(layers.InputLayer(input_shape=(img_height, img_width, 3)))
     model.add(layers.Rescaling(1.0 / 255))
 
-    model.add(layers.Conv2D(20, 3, padding="same", use_bias=False))
-    model.add(layers.BatchNormalization())
-    model.add(layers.Activation("silu"))
-    model.add(layers.Conv2D(44, (3, 3), use_bias=False))
-    model.add(layers.BatchNormalization())
-    model.add(layers.Activation("silu"))
-    model.add(layers.MaxPooling2D(pool_size=(2, 2)))
-    model.add(layers.Dropout(0.25))
-
-    model.add(layers.Conv2D(24, (3, 3), padding="same", use_bias=False))
+    model.add(layers.Conv2D(16, 3, padding="same", use_bias=False))
     model.add(layers.BatchNormalization())
     model.add(layers.Activation("silu"))
     model.add(layers.Conv2D(48, (3, 3), use_bias=False))
@@ -220,12 +216,21 @@ def predefined_model(img_height: int, img_width: int, learning_rate: float = 1e-
     model.add(layers.MaxPooling2D(pool_size=(2, 2)))
     model.add(layers.Dropout(0.25))
 
+    model.add(layers.Conv2D(16, (3, 3), padding="same", use_bias=False))
+    model.add(layers.BatchNormalization())
+    model.add(layers.Activation("silu"))
+    model.add(layers.Conv2D(96, (3, 3), use_bias=False))
+    model.add(layers.BatchNormalization())
+    model.add(layers.Activation("silu"))
+    model.add(layers.MaxPooling2D(pool_size=(2, 2)))
+    model.add(layers.Dropout(0.25))
+
     model.add(layers.GlobalAveragePooling2D())
 
-    model.add(layers.Dense(176, activation="silu", use_bias=False))
+    model.add(layers.Dense(96, activation="silu", use_bias=False))
     model.add(layers.BatchNormalization())
     model.add(layers.Dropout(0.4))
-    model.add(layers.Dense(64, activation="silu", use_bias=False))
+    model.add(layers.Dense(128, activation="silu", use_bias=False))
     model.add(layers.BatchNormalization())
     model.add(layers.Dropout(0.4))
 
@@ -433,7 +438,7 @@ def run(args: argparse.Namespace) -> None:
             tuner = kt.BayesianOptimization(
                 lambda hp: model_builder(hp, int(args.img_height / args.image_divider), int(args.img_width / args.image_divider)),
                 objective="val_accuracy",
-                max_trials=args.tune_iterations,
+                max_trials=args.tune_trials,
                 num_initial_points=5,
                 alpha=0.0001, #exploration factor, higher = more exploration
                 beta=2.576, # standard value for 99% confidence
@@ -453,7 +458,7 @@ def run(args: argparse.Namespace) -> None:
             tuner = kt.RandomSearch(
                 lambda hp: model_builder(hp, int(args.img_height / args.image_divider), int(args.img_width / args.image_divider)),
                 objective="val_accuracy",
-                max_trials=args.tune_iterations,
+                max_trials=args.tune_trials,
                 directory=directory,
                 project_name=project_name,
                 seed=args.seed,
@@ -470,11 +475,16 @@ def run(args: argparse.Namespace) -> None:
                 seed=args.seed,
             )
 
+        # Hyperband sets its own per-trial epoch budget (up to max_epochs) via its
+        # bracket schedule; passing epochs=tune_search_epochs here would clip the
+        # final-bracket survivors that are meant to train for the full max_epochs.
+        # So only honour --tune-search-epochs for the fixed-budget tuners.
+        search_kwargs = {} if tunertype == "hyperband" else {"epochs": args.tune_search_epochs}
         tuner.search(
             train_ds,
-            epochs=args.tune_search_epochs,
             validation_data=val_ds,
             callbacks=[tf.keras.callbacks.EarlyStopping(monitor="val_auc", mode="max", patience=args.es_patience)],
+            **search_kwargs,
         )
         K.clear_session()
         logger.info("Hyperparameter search finished.")
@@ -597,8 +607,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-split", type=float, default=0.3, help="Validation split (0-1) if --val-dir not provided.")
     parser.add_argument("--img-height", type=int, default=764, help="Input image height.")
     parser.add_argument("--img-width", type=int, default=1092, help="Input image width.")
-    parser.add_argument("--batch-size", type=int, default=32, help="Batch size. Values of 16-64 work well; very small (e.g. 4) hurt training on this small dataset, and >=128 starts to degrade.")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed.")
+    parser.add_argument("--batch-size", type=int, default=16, help="Batch size. Default 16 matches the manuscript (batch-16/seed-0) model. A multi-seed sweep found batch>=8 trains reliably; 2-4 collapse to ~chance.")
+    parser.add_argument("--seed", type=int, default=0, help="Random seed. Default 0 matches the manuscript (batch-16/seed-0) model.")
 
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs.")
     parser.add_argument("--learning-rate", type=float, default=1e-3, help="Learning rate for Adam.")
@@ -608,9 +618,10 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--tune", action="store_true", help="Use KerasTuner to search hyperparameters.")
     parser.add_argument("--tuner", type=str, default="hyperband", help="Which kerastuner method to use. Choose from: hyperband, bayesianoptimization, gridsearch, randomsearch")
-    parser.add_argument("--tune-max-epochs", type=int, default=15, help="Hyperband max epochs per bracket.")
-    parser.add_argument("--tune-iterations", type=int, default=3, help="Hyperband iterations.")
-    parser.add_argument("--tune-search-epochs", type=int, default=5, help="Epochs used in tuner.search().")
+    parser.add_argument("--tune-max-epochs", type=int, default=15, help="Hyperband only: max epochs per bracket (max_epochs).")
+    parser.add_argument("--tune-iterations", type=int, default=3, help="Hyperband only: how many times to run the full bracket sweep (hyperband_iterations). Ignored by other tuners.")
+    parser.add_argument("--tune-trials", type=int, default=25, help="bayesianoptimization/randomsearch only: total models to try (max_trials). Small values (e.g. 3) get stuck at the majority-class baseline on this dataset.")
+    parser.add_argument("--tune-search-epochs", type=int, default=5, help="Epochs per trial in tuner.search(). Mainly relevant for bayesianoptimization/randomsearch; Hyperband manages its own per-trial budget via --tune-max-epochs.")
 
     parser.add_argument("--parallel", action="store_true", help="Use MirroredStrategy if GPUs are available.")
     parser.add_argument("--tmpdir", default="./outputs", help="Base output directory for logs/checkpoints/models.")

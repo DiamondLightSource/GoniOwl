@@ -31,6 +31,7 @@ The `-e` flag installs the package in editable mode, allowing you to modify the 
 - Run `python src/Training/import_crop_save.py --snapshots /path/to/snapshots --imgdir /path/to/save/cropped/images`
 - Check images in output folders manually
 - Run training `python src/Training/train_binary_classification_model.py --train-dir /path/to/save/cropped/images --tune`
+- Batch size matters on this small dataset. A multi-seed sweep (5 seeds × batch sizes 2–64) showed batch ≥ 8 trains reliably to ~0.99, while batch 2–4 frequently collapse to the majority-class baseline (~0.53). The default `--batch-size` is **16** and `--seed` is **0**, matching the model reported in the manuscript.
 
 ### Using python/pip
 - Create python venv `python -m venv .venv`
@@ -112,14 +113,13 @@ This project introduces a compact CNN classifier trained on real beamline images
 ---
 
 # Performance
-Validation
-- **Accuracy**: 99.83%
-- **Precision**: 99.82%
-- **Recall**: 99.82%
-- **AUC**: 99.87%
-- **F1 Score**: 99.82%
 
-Evaluated on a held-out test set with manually verified labels. Over a 3-month deployment, the model prevented multiple potential collisions and outperformed legacy histogram-based methods.
+Held-out test set (875 images), deployment-style offline inference with confidence gating (confident iff max(score, 1−score) > 0.85; otherwise the fail-safe *undetermined* state):
+- **Coverage**: 100% (875/875 confident)
+- **Accuracy (confident subset)**: 99.77% (873/875)
+- **Confusion matrix** [[TN, FP], [FN, TP]], classes [pinoff, pinon]: [[458, 0], [2, 415]]
+
+Evaluated with manually verified labels. Over a 3-month deployment, the model prevented multiple potential collisions and outperformed legacy histogram-based methods.
 
 Raw training images: 10.5281/zenodo.17047675
 
