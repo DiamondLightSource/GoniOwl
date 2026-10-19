@@ -22,12 +22,6 @@ def run_script(path: Path, *args: str, cwd: Path) -> subprocess.CompletedProcess
     )
 
 
-def test_console_script_version():
-    exe = Path(sys.executable).parent / "GoniOwl"
-    out = subprocess.run([str(exe), "--version"], check=True, capture_output=True, text=True)
-    assert out.stdout.strip()
-
-
 def test_import_crop_save(tmp_path):
     rng = np.random.default_rng(0)
     snapshots = tmp_path / "snapshots"
@@ -126,3 +120,21 @@ def test_inference_on_disagreements(tmp_path, parity):
     assert len(rows) == 7
     assert sorted(r["label"] for r in rows) == ["pin off"] * 3 + ["pin on"] * 3 + ["undetermined"]
     assert len(list((tmp_path / "results").glob("*_pred.png"))) == 7
+
+
+def test_inference_on_raw_frames_with_crop_border(tmp_path, parity):
+    """Uncropped 964x1292 frames with --crop-border 100 give the same decisions as the cropped images."""
+    images = tmp_path / "raw"
+    images.mkdir()
+    for path in parity["paths"]:
+        img = cv2.imread(str(path))
+        cv2.imwrite(str(images / path.name), cv2.copyMakeBorder(img, 100, 100, 100, 100, cv2.BORDER_REPLICATE))
+    run_script(
+        SRC / "Metrics" / "inference_on_disagreements.py",
+        "--model-path", str(MANUSCRIPT_MODEL), "--disagreement-dir", str(images),
+        "--output-dir", str(tmp_path / "results"), "--crop-border", "100", "--device", "cpu",
+        cwd=tmp_path,
+    )
+    labels = {r["filename"]: r["label"] for r in csv.DictReader(open(tmp_path / "results" / "inference_results.csv"))}
+    expected = ["pin on"] * 3 + ["pin off"] * 3 + ["undetermined"]
+    assert [labels[p.name] for p in parity["paths"]] == expected

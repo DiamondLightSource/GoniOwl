@@ -62,9 +62,10 @@ Converted models reproduce the Keras predictions (to ~1e-6; ~1e-3 for the 2025 m
 
 ## Inference
 
-- Copy the model from training into `src/GoniOwl/` (or point `--model` at it).
-- Run the IOC with `GoniOwl` (or `python -m GoniOwl`). This launches the IOC in this terminal, so it is advisable to run it via screen/tmux.
-- Options: `--model` (default: the shipped `20250714-111015_epoch20_binary_batch4.pt`), `--camera-url`, `--log-path`, `--prefix` (default `GONIOWL-TEST`), `--device`, `--last-image` (where the last cropped frame is saved, default `tmp.jpg`), `--non-interactive`.
+- Copy model from training into src/GoniOwl/
+- Alter GoniOwl_controller.py to target model of choice and set log output directory.
+- From src/GoniOwl/ run `pipenv run python -m GoniOwl`. This will launch the ioc from this terminal, so it is advisable to run this via screen/tmux.
+- The IOC (`__main__.py`, `GoniOwl_controller.py`) has not been ported yet: it still loads the Keras `.h5` model with TensorFlow and runs on `cothread`/`softioc`, which are not installed by `pyproject.toml`. For offline PyTorch inference use the scripts below.
 
 ## Metrics on beamline logs
 
@@ -97,7 +98,7 @@ python src/Metrics/inference_on_disagreements.py \
 
 ## Testing
 
-- Unit and integration tests: `pytest` (or `pytest -m "not slow"` to skip the tests that train models and start the IOC). The IOC test runs a real soft IOC on loopback and drives it with Channel Access.
+- Unit and integration tests: `pytest` (or `pytest -m "not slow"` to skip the tests that train models).
 - To check that GoniOwl is running and serving PVs, try `caget GONIOWL-TEST:WHOAMI` -> `GONIOWL-TEST:WHOAMI            GoniOwl Python IOC`
 - To check that inference is working, try:
 `caput GONIOWL-TEST:INFER 1` -> `Old : GONIOWL-TEST:INFER             Disable` `New : GONIOWL-TEST:INFER             Enable`
@@ -106,11 +107,10 @@ then
 
 ## Beamline Implementation
 
-- On I23, Diamond Light Source, the PV `GONIOWL-TEST:INFER` is called by GDA. Every put of 1 runs an inference on the latest image from the specified camera feed straight away. A put with callback (`caput -c`) completes only once `GONIOSTATUS` has been updated; GDA currently adds a sleep of 0.1 s instead.
-- The latest frame has 100 px cropped from each side (as for the training images) and is resized to the model's input size.
-- The logic first checks if the image is too light or too dark from the mean grey level (outside 80–180). If so, `GONIOWL-TEST:GONIOSTATUS` is set to 3 and used in GDA as a failsafe stop. The same happens if the camera image cannot be read.
-- If the image passes this first check, inference is run and a score between 0 and 1 is generated: the model's probability that a pin is on the goniometer. At least 85% certainty is needed to give a definitive decision: if the score is < 0.15 (pin off) `GONIOSTATUS` is set to 1, if the score is > 0.85 (pin on) it is set to 2, and otherwise it is set to 3.
-- This PV is checked by GDA to decide whether there is a pin on the goniometer or not: 1 = pin off, 2 = pin on, 3 = not sure so stop.
+- On I23, Diamond Light Source, the PV `GONIOWL-TEST:INFER` is called by GDA. Logic inside the ioc runs an inference on the latest image from the specified camera feed. A sleep of 0.1s is added here to allow time for the inference to occur with allowance for filesystem lag. 
+- The logic first checks if the image is too light or too dark by getting an average of all the pixels. If this is the case, a PV `GONIOWL-TEST:GONIOSTATUS` is set to 3 and used in GDA as a failsafe stop.
+- If the image passes this first check. Inference is run using the model and a score between 0-1 is generated. 0 indicates 100% certainty of a pin on the goniometer and 1 indicates 100% certainty of no pin on the goniometer. At least 85% certainty is needed to give a definitive decision, so if the score is < 0.15, the PV `GONIOWL-TEST:GONIOSTATUS` is set to 1. If the score is > 0.85, the PV `GONIOWL-TEST:GONIOSTATUS` is set to 2. If the score is (0.85 <= 0.15), the PV `GONIOWL-TEST:GONIOSTATUS` is set to 3. 
+- This PV is checked by GDA to give a decision on whether there is a pin present on the goniometer of not. 1 = pin on, 2 = pin off, 3 = not sure so stop.
 
 # Overview
 

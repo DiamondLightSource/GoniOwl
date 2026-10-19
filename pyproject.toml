@@ -22,14 +22,11 @@ dependencies = [
     "tqdm==4.70.1",
     "tensorboard==2.21.0",
     "optuna==5.0.0",
-    "softioc==4.7.2",
-    "epicscorelibs==7.0.10.99.0.2",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest==9.1.1",
-    "aioca==2.1",
 ]
 
 [project.scripts]
@@ -48,4 +45,4 @@ write_to = "src/GoniOwl/_version.py"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--tb=native"
-markers = ["slow: trains models or starts the IOC (deselect with -m 'not slow')"]
+markers = ["slow: trains models (deselect with -m 'not slow')"]

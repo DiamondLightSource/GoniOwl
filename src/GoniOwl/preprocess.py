@@ -1,10 +1,10 @@
-"""Image preprocessing and decision logic shared by training, the IOC and metrics.
+"""Image preprocessing and decision logic shared by training, evaluation and metrics.
 
 Every consumer of the model must prepare images the same way:
 
 1. Crop ``CROP_BORDER`` pixels from every side of the raw camera frame
-   (``import_crop_save.py`` does this once for the training set; the IOC does it
-   per frame).
+   (``import_crop_save.py`` does this once for the training set; ``crop_jpeg``
+   does the same for a single live frame).
 2. Resize to the model's input size with non-antialiased bilinear filtering,
    matching tf.image.resize (``load_image``).
 3. Feed raw 0-255 RGB pixels; the model rescales to 0-1 itself.

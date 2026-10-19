@@ -1,116 +1,101 @@
-import logging
-import urllib.request
-from pathlib import Path
-from typing import Optional, Union
-
+from cothread import catools
+from softioc import builder
+import tensorflow as tf
+from tensorflow import keras
+import cv2
+from io import BytesIO
+import urllib
+from time import sleep
 import numpy as np
-import torch
-
-from .model import load_checkpoint
-from .preprocess import (
-    CROP_BORDER,
-    STATUS_UNSURE,
-    crop_jpeg,
-    decide,
-    is_image_valid,
-    load_image,
-    mean_intensity,
-)
-
-PACKAGE_DIR = Path(__file__).resolve().parent
-
-# The 2025 production model, converted from 20250714-111015_epoch20_binary_batch4.h5.
-DEFAULT_MODEL = PACKAGE_DIR / "20250714-111015_epoch20_binary_batch4.pt"
-DEFAULT_CAMERA_URL = "http://bl23i-di-serv-04.diamond.ac.uk:8080/ECAM6.mjpg.jpg"
-DEFAULT_LOG_PATH = "/dls/science/groups/i23/scripts/chris/GoniOwl/src/GoniOwl/logs/GoniOwl_binary_controller.log"
+import datetime
 
 
-def _file_logger(log_path: Optional[Union[str, Path]]) -> logging.Logger:
-    log = logging.getLogger("GoniOwl.controller")
-    log.setLevel(logging.INFO)
-    log.propagate = False
-    for handler in list(log.handlers):
-        log.removeHandler(handler)
-        handler.close()
-    if log_path:
-        Path(log_path).parent.mkdir(parents=True, exist_ok=True)
-        handler = logging.FileHandler(log_path)
-        handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s", "%Y-%m-%d %H:%M:%S"))
-        log.addHandler(handler)
-    return log
+try:
+    import epicscorelibs.path.cothread
+except ImportError:
+    pass
 
+# 20250714-111015_epoch20_binary_batch4.h5 is 1/5 scaled image! 
+
+image_divider = 5
 
 class GoniOwlController:
-    def __init__(
-        self,
-        model_path: Union[str, Path] = DEFAULT_MODEL,
-        camera_url: str = DEFAULT_CAMERA_URL,
-        log_path: Optional[Union[str, Path]] = DEFAULT_LOG_PATH,
-        device: str = "cpu",
-        last_image_path: Optional[Union[str, Path]] = "tmp.jpg",
-        timeout: float = 5.0,
-    ):
-        self.camera_url = camera_url
-        self.last_image_path = last_image_path
-        self.timeout = timeout
-        self.log = _file_logger(log_path)
-        self.log.info("GoniOwl binary controller started.")
+    def __init__(self):
+        self.log_path = "/dls/science/groups/i23/scripts/chris/GoniOwl/src/GoniOwl/logs/GoniOwl_binary_controller.log"
+        with open(self.log_path, "a") as f:
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            f.write(f"{timestamp} - INFO - GoniOwl binary controller started.\n")
+        self.model_name = "20250714-111015_epoch20_binary_batch4.h5"
+        self.model = tf.keras.models.load_model(f"./{self.model_name}")
+        with open(self.log_path, "a") as f:
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            f.write(f"{timestamp} - INFO - Model {self.model_name} loaded successfully.\n")
+        self.model.summary()
+        self.classes = ["pinoff", "pinon"]
 
-        self.model_name = Path(model_path).name
-        self.model, info = load_checkpoint(model_path, device)
-        self.img_size = (info["img_height"], info["img_width"])
-        self.classes = info["class_names"]
-        self.log.info(f"Model {self.model_name} loaded successfully.")
-        print(self.model)
 
-        self.predicted_label = None
-        self.score = 0.0
+    def urltoimage(self, url):
+        self.resp = urllib.request.urlopen(url)
+        self.image = np.asarray(bytearray(self.resp.read()), dtype="uint8")
+        self.image = cv2.imdecode(self.image, cv2.IMREAD_COLOR)
+        self.image = self.image[100:-100, 100:-100]
+        cv2.imwrite("tmp.jpg", self.image)
+        _, buffer = cv2.imencode(".jpg", self.image)
+        io_buf = BytesIO(buffer)
+        return io_buf
 
-    def fetch_frame(self) -> bytes:
-        """Grab the latest frame from the camera and crop it like the training images."""
-        with urllib.request.urlopen(self.camera_url, timeout=self.timeout) as resp:
-            cropped = crop_jpeg(resp.read(), CROP_BORDER)
-        if self.last_image_path:
-            Path(self.last_image_path).write_bytes(cropped)
-        return cropped
+    def is_image_valid(self, img, low_thresh=80, high_thresh=180):
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        mean_intensity = np.mean(gray)
+        if mean_intensity < low_thresh or mean_intensity > high_thresh:
+            print(f"Image rejected: mean intensity {mean_intensity:.2f}")
+            return False
+        return True
 
-    @torch.no_grad()
-    def predict(self, image: np.ndarray) -> float:
-        """P(pin on) for one RGB uint8 image at the model's input size."""
-        x = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0).float()
-        x = x.to(next(self.model.parameters()).device)
-        return float(torch.sigmoid(self.model(x)).item())
-
-    def infer(self) -> int:
-        """Run one inference on the live camera and return the GONIOSTATUS value."""
-        try:
-            image = load_image(self.fetch_frame(), self.img_size)
-        except Exception as e:
-            print(f"Could not read camera image: {e}")
-            self.log.error(f"Could not read camera image from {self.camera_url}: {e}")
-            self.predicted_label = "error"
-            self.score = 0.0
-            return STATUS_UNSURE
-        return self.infer_image(image)
-
-    def infer_image(self, image: np.ndarray) -> int:
-        if not is_image_valid(image):
-            print(f"Image rejected: mean intensity {mean_intensity(image):.2f}")
+    def infer(self):
+        self.stream = self.urltoimage(
+            "http://bl23i-di-serv-04.diamond.ac.uk:8080/ECAM6.mjpg.jpg"
+        )
+        self.stream.seek(0)
+        img_bytes = self.stream.read()
+        img_tensor = tf.image.decode_image(img_bytes, channels=3)
+        img_height, img_width = int(img_tensor.shape[0]), int(img_tensor.shape[1])
+        self.stream.seek(0)
+        self.img_in = keras.preprocessing.image.load_img(
+            (self.stream), target_size=(int(img_height / image_divider), int(img_width / image_divider))
+        )
+        self.img_array = keras.preprocessing.image.img_to_array(self.img_in)
+        if not self.is_image_valid(self.img_array.astype(np.uint8)):
             self.predicted_label = "invalid"
             self.score = 0.0
             self.printscore()
-            return STATUS_UNSURE
+            return 3
+        self.img_array = tf.expand_dims(self.img_array, 0)
+        self.predictions = self.model.predict(self.img_array, verbose=0)
+        self.score = self.predictions[0]
 
-        score = self.predict(image)
-        status, self.predicted_label = decide(score)
-        print(f"{score} is {self.predicted_label}")
-        # Report confidence in the predicted class.
-        self.score = 1 - score if self.predicted_label == self.classes[0] else score
-        self.printscore()
-        return status
-
+        if self.score < 0.15:
+            print(f"{self.score} is {self.classes[0]}")
+            self.predicted_label = self.classes[0]
+            self.score = 1 - self.score
+            self.printscore()
+            return 1
+        elif self.score > 0.85:
+            print(f"{self.score} is {self.classes[1]}")
+            self.predicted_label = self.classes[1]
+            self.printscore()
+            return 2
+        else:
+            print(f"{self.score} is unknown")
+            self.predicted_label = "unknown"
+            self.printscore()
+            return 3
+        
     def printscore(self):
         rounded_score = np.round((self.score * 100), 3)
         msg = f"Status is {self.predicted_label} with {str(rounded_score)} % conf."
         print(msg)
-        self.log.info(msg)
+        
+        with open(self.log_path, "a") as f:
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            f.write(f"{timestamp} - INFO - {msg}\n")
