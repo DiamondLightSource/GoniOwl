@@ -7,19 +7,14 @@ inference on each ECAM_6 image, and produce:
 
 Example:
   python infer_all.py \
-    --model-path ./outputs/checkpoints/model.keras \
-    --img-height 152 --img-width 218
+    --model-path ./outputs/checkpoints/model.pt
 """
 
 import os
 import csv
 import glob
-import json
-import shutil
 import argparse
 import logging
-import tempfile
-from pathlib import Path
 
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -30,52 +25,15 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import tensorflow as tf
-import keras
-from keras import Model
-from typing import cast
+
+from GoniOwl.model import load_checkpoint, predict_proba, select_device
+from GoniOwl.preprocess import load_image
 
 
 LOG_DIR = "/dls_sw/i23/logs/GoniOwl"
 START_DATE_CUTOFF = "2023-01-01"
 DODGY_DATA = ["2024-08-01-09-02-27"]
 OUTPUT_DIR = "outputs/inferall"
-
-
-def load_model(model_path: str) -> Model:
-    """Load a Keras model, patching legacy .h5 files for Keras 3 compatibility."""
-    if model_path.endswith(".h5"):
-        import h5py
-
-        tmp = tempfile.NamedTemporaryFile(suffix=".h5", delete=False)
-        tmp.close()
-        shutil.copy(model_path, tmp.name)
-
-        with h5py.File(tmp.name, "r+") as f:
-            config = json.loads(f.attrs["model_config"])
-
-            def fix_dtypes(obj: object) -> None:
-                if isinstance(obj, dict):
-                    for k, v in obj.items():
-                        if k == "dtype":
-                            if isinstance(v, str):
-                                obj[k] = {"class_name": "DTypePolicy", "config": {"name": v}}
-                            elif isinstance(v, dict) and v.get("class_name") == "Policy":
-                                v["class_name"] = "DTypePolicy"
-                        else:
-                            fix_dtypes(v)
-                elif isinstance(obj, list):
-                    for item in obj:
-                        fix_dtypes(item)
-
-            fix_dtypes(config)
-            f.attrs["model_config"] = json.dumps(config)
-
-        model = cast(Model, keras.models.load_model(tmp.name, compile=False))
-        os.remove(tmp.name)
-        return model
-    else:
-        return cast(Model, keras.models.load_model(model_path, compile=False))
 
 
 def setup_logging() -> logging.Logger:
@@ -87,13 +45,13 @@ def setup_logging() -> logging.Logger:
 logger = setup_logging()
 
 
-def load_log_data() -> pd.DataFrame:
+def load_log_data(log_dir: str = LOG_DIR) -> pd.DataFrame:
     """Load all CSV logs, apply filters, and normalise labels."""
-    csvs = glob.glob(os.path.join(LOG_DIR, "*.csv"))
+    csvs = glob.glob(os.path.join(log_dir, "*.csv"))
     csvs = [f for f in csvs if os.path.basename(f)[:10] >= START_DATE_CUTOFF]
 
     if not csvs:
-        logger.warning("No CSV files found in %s", LOG_DIR)
+        logger.warning("No CSV files found in %s", log_dir)
         return pd.DataFrame()
 
     df = pd.concat((pd.read_csv(f, header=None) for f in csvs), ignore_index=True)
@@ -171,14 +129,18 @@ def _save_annotated_image_worker(args: tuple) -> None:
 def run_inference_all(
     df: pd.DataFrame,
     model_path: str,
-    img_height: int,
-    img_width: int,
+    img_height: int | None = None,
+    img_width: int | None = None,
     batch_size: int = 32,
     max_workers: int | None = None,
+    crop_border: int = 0,
+    device: str = "auto",
 ) -> list[dict]:
     logger.info("Loading model from: %s", model_path)
-    model = load_model(model_path)
-    logger.info("Model loaded successfully.")
+    model, info = load_checkpoint(model_path, select_device(device))
+    img_height = img_height or info["img_height"]
+    img_width = img_width or info["img_width"]
+    logger.info("Model loaded successfully (input %dx%d).", img_height, img_width)
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -208,8 +170,7 @@ def run_inference_all(
         valid_rows = []
         for row in batch_rows:
             try:
-                img = keras.utils.load_img(row["Image1"], target_size=(img_height, img_width))
-                img_arrays.append(keras.utils.img_to_array(img))
+                img_arrays.append(load_image(row["Image1"], (img_height, img_width), border=crop_border))
                 valid_rows.append(row)
             except Exception as e:
                 logger.error("Error loading %s: %s", row["Image1"], e)
@@ -219,10 +180,10 @@ def run_inference_all(
 
         # Batch predict
         batch_tensor = np.stack(img_arrays, axis=0)
-        predictions = model.predict(batch_tensor, verbose=0, batch_size=batch_size)
+        predictions = predict_proba(model, batch_tensor, batch_size=batch_size)
 
         for row, prediction in zip(valid_rows, predictions):
-            pred = float(prediction[0])
+            pred = float(prediction)
             img_path = row["Image1"]
             human_label = row["Human"]
             histogram_label = row["Histogram"]
@@ -320,8 +281,11 @@ def parse_args() -> argparse.Namespace:
                         help="Regenerate histograms from existing CSV without running inference.")
     parser.add_argument("--run-path", default=None,
                         help="Path to a run directory (e.g. outputs/inferall_modelid). Used with --histograms-only.")
-    parser.add_argument("--img-height", type=int, default=152, help="Image height for inference.")
-    parser.add_argument("--img-width", type=int, default=218, help="Image width for inference.")
+    parser.add_argument("--log-dir", default=LOG_DIR, help="Directory of GoniOwl CSV logs.")
+    parser.add_argument("--img-height", type=int, default=None, help="Image height for inference (default: from the checkpoint).")
+    parser.add_argument("--img-width", type=int, default=None, help="Image width for inference (default: from the checkpoint).")
+    parser.add_argument("--crop-border", type=int, default=0, help="Pixels to crop from each side before resizing (use 100 for raw, uncropped camera frames).")
+    parser.add_argument("--device", default="auto", help="Torch device: auto, cuda, mps or cpu.")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size for inference.")
     parser.add_argument("--max-workers", type=int, default=None, help="Max parallel workers for saving images.")
     return parser.parse_args()
@@ -342,7 +306,7 @@ if __name__ == "__main__":
         if not args.model_path or not os.path.exists(args.model_path):
             raise FileNotFoundError(f"Model not found: {args.model_path}")
 
-        df = load_log_data()
+        df = load_log_data(args.log_dir)
         if df.empty:
             logger.info("No data found. Nothing to do.")
         else:
@@ -353,6 +317,8 @@ if __name__ == "__main__":
                 img_width=args.img_width,
                 batch_size=args.batch_size,
                 max_workers=args.max_workers,
+                crop_border=args.crop_border,
+                device=args.device,
             )
             save_csv(results)
             generate_confidence_histograms(results)

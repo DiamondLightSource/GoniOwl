@@ -4,67 +4,64 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-GoniOwl is a small binary CNN (~51k params) that tells whether a sample pin is on the goniometer at beamline I23, Diamond Light Source. It stops equipment collisions during automated sample handling. The repo has three independent parts that share no imports:
+GoniOwl is a small binary CNN (~51k params, PyTorch) that tells whether a sample pin is on the goniometer at beamline I23, Diamond Light Source. It stops equipment collisions during automated sample handling. The code is in four places:
 
-- `src/Training/`: dataset prep and model training (standalone scripts, usually run on the Diamond SLURM cluster).
-- `src/GoniOwl/`: the deployed inference service, a Python EPICS soft IOC (`softioc` + `cothread`) that GDA calls.
-- `src/Metrics/`: offline evaluation against the beamline's historical decision logs.
+- `src/GoniOwl/`: the installable package. It holds the shared model (`model.py`), the preprocessing and decision logic (`preprocess.py`), and the deployed inference service. The service is a Python EPICS soft IOC (`softioc` on its asyncio dispatcher) that GDA calls.
+- `src/Training/`: standalone scripts for dataset prep, training, and Keras→PyTorch conversion.
+- `src/Metrics/`: offline evaluation, both against a held-out test set and against the beamline's historical decision logs.
+- `tests/`: the pytest suite. `tests/fixtures/` holds 7 real cropped images and the original Keras models' scores for them.
+
+The scripts in `src/Training/` and `src/Metrics/` import from the `GoniOwl` package, so install it first.
 
 ## Commands
 
 ```bash
-# Environment (pyproject.toml pins the training/TF stack)
-uv venv && source .venv/bin/activate && uv pip install -e .
+uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"   # or: uv sync --extra dev
 
-# 1. Crop raw snapshots (expects <snapshots>/pin_ON/Pin_gripper_on_gonio and <snapshots>/pin_OFF/Before_sample_load)
-python src/Training/import_crop_save.py --snapshots /path/to/snapshots --imgdir /path/to/out
-#    -> <imgdir>/goniopin_auto_<ddmmyyyy>_binary/{pinon,pinoff} plus a 10% held-out <imgdir>/test_<ddmmyyyy>_binary
+pytest                         # full suite (~1 min), includes training runs and a live IOC
+pytest -m "not slow"           # skip training/IOC tests
+pytest tests/test_convert.py::test_converted_model_matches_keras   # single test
 
-# 2. Train (outputs go to --tmpdir, default ./outputs, which is gitignored)
-python src/Training/train_binary_classification_model.py --train-dir /path/to/out/goniopin_auto_..._binary
-#    add --tune [--tuner hyperband|bayesianoptimization|randomsearch|gridsearch] for KerasTuner, --parallel for MirroredStrategy
+# Data prep: expects <snapshots>/pin_ON/Pin_gripper_on_gonio and <snapshots>/pin_OFF/Before_sample_load
+python src/Training/import_crop_save.py --snapshots training_images --imgdir outputs/data
+python src/Training/train_binary_classification_model.py --train-dir outputs/data/goniopin_auto_<ddmmyyyy>_binary
+python src/Metrics/evaluate_test_set.py --model-path outputs/<model>.pt --test-dir outputs/data/test_<ddmmyyyy>_binary
+python src/Training/convert_keras_to_torch.py -m model.keras -o model.pt
 
-# 3. Run the IOC (must be run from src/GoniOwl/, because the model is loaded from a relative path)
-cd src/GoniOwl && python -m GoniOwl        # README uses `pipenv run python -m GoniOwl`; run inside screen/tmux
-
-# Smoke-test the running IOC
-caget GONIOWL-TEST:WHOAMI
-caput GONIOWL-TEST:INFER 1 && caget GONIOWL-TEST:GONIOSTATUS
-
-# Offline evaluation (reads /dls_sw/i23/logs/GoniOwl/*.csv, writes under ./outputs/)
-python src/Metrics/infer_all.py --model-path model.keras --img-height 152 --img-width 218
-python src/Metrics/inference_on_disagreements.py --model-path model.keras --disagreement-dir DIR
+GoniOwl --camera-url URL --log-path PATH        # IOC (= python -m GoniOwl); --non-interactive for no shell
 ```
 
-The repo has no tests. The pytest, tox, flake8 and black config in `setup.cfg` is left over from the DLS project template, and those tools are not installed by `pyproject.toml`. Do not run `pytest` as configured: `--doctest-modules` over `src` would import `GoniOwl/__main__.py`, which starts the IOC and loads TensorFlow as a side effect.
+The real training images live in `training_images/` and outputs in `outputs/`. Both are gitignored.
 
 ## Architecture and cross-file invariants
 
-**Preprocessing must match between training and inference.** Raw camera frames get a 100 px crop on every side (`import_crop_save.croppit` and `GoniOwlController.urltoimage`), then both height and width are divided by `image_divider = 5`. Training defaults are 764×1092, which gives 152×218 inputs. The model has its own `Rescaling(1/255)` layer, so feed it raw 0–255 pixels. The Metrics scripts take `--img-height/--img-width` directly and do **not** apply the 100 px crop.
+**Preprocessing must match everywhere** (all of it is in `GoniOwl/preprocess.py`):
+1. Raw camera frames get a 100 px crop on every side. `import_crop_save.py` does this once for the training set; `crop_jpeg` does it per live frame using the same cv2 decode/crop/re-encode.
+2. `load_image` → `resize` is bilinear **without antialiasing**, equivalent to `tf.image.resize`, and returns float32. Do not switch to PIL `BILINEAR` or any other antialiased resize: it makes the 2025 model confidently call pin-on frames pin-off.
+3. Images go into the model as raw 0–255 float NCHW. The model divides by 255 itself, and `forward` returns logits; use `predict_proba` to get P(pin on).
 
-**Label semantics.** `image_dataset_from_directory` assigns classes alphabetically, so `pinoff = 0` and `pinon = 1`, and the sigmoid output is P(pin on). `GoniOwlController.infer()` maps the score to `GONIOSTATUS` like this:
-- `3`: image rejected (mean grey intensity outside [80, 180]) or score in [0.15, 0.85] ("not sure, stop")
-- `1`: score < 0.15 → `pinoff`
-- `2`: score > 0.85 → `pinon`
+Training defaults are 764×1092 ÷ `--image-divider 5`, which gives 152×218. Every `.pt` checkpoint stores its input size and class names, and the IOC and metrics scripts read them from it. The Metrics scripts default to `--crop-border 0` on logged images.
 
-The README's "Beamline Implementation" section describes the opposite mapping (score 0 = pin on, status 1 = pin on). The code and the Metrics scripts (`> 0.85` = "on") agree with each other but not with the README. Confirm with the user before changing either.
+**Labels and status.** Classes come from alphabetical folder names: `pinoff = 0`, `pinon = 1`. `preprocess.decide` maps the score to `GONIOSTATUS`:
+- `1`: score < 0.15 (pin off)
+- `2`: score > 0.85 (pin on)
+- `3`: unsure, an image outside mean grey [80, 180], or a camera read failure
 
-**IOC flow** (`src/GoniOwl/__main__.py`): everything runs at module import time, and there is no `main()` function, even though the `setup.cfg` console_script points at `GoniOwl.__main__:main`. It builds PVs under the `GONIOWL-TEST` prefix and spawns a cothread loop that polls `INFER` once per second. When `INFER` is 1, it fetches the latest MJPEG frame from the hard-coded ECAM6 URL, runs `infer()` and writes `GONIOSTATUS`. The model filename, camera URL and log path (`/dls/science/...`) are all hard-coded in `GoniOwl_controller.py`. The deployed model is still the legacy `.h5` file; the `.keras` files next to it are newer training outputs.
+The pre-PyTorch README documented 1 = pin on, which is the opposite of the code. The code's mapping is what has always been deployed.
 
-**Training script** (`train_binary_classification_model.py`). Several choices here were tuned on purpose; don't revert them:
-- `_ensure_cuda_libpath()` must stay above every TF/cv2 import. It prepends the pip `nvidia/*/lib` dirs to `LD_LIBRARY_PATH` and re-execs the process, because cv2 otherwise hides the CUDA libs and TF falls back to CPU.
-- Dataset pipeline order is `cache() → shuffle(reshuffle_each_iteration) → map(augmentations)`. Caching after augmentation froze the augmentations from epoch to epoch.
-- `ReduceLROnPlateau` and `EarlyStopping` monitor `val_auc` (mode max), not `val_loss`. On this small dataset val_loss is noisy enough to collapse training to the majority class.
-- Keep augmentation gentle (±3° rotation, 5% translation, small brightness/contrast changes, light noise). Stronger photometric augmentation stops learning.
-- Batch size ≥ 8 (default 16, seed 0, which matches the manuscript model). Batch 2–4 often collapses to ~0.53.
-- `predefined_model()` (the manuscript architecture) and `model_builder()` (the KerasTuner search space) duplicate the same layer stack. Keep them in sync.
-- After saving, `_strip_unsupported_keys` removes `quantization_config` from the `.keras` zip so older Keras 3 versions can load it. `src/Training/convert_to_savedmodel.py` does the same thing standalone (despite its name, it does not produce a SavedModel). `src/Metrics/infer_all.load_model` separately patches legacy `.h5` dtype configs for Keras 3.
+**Model** (`GoniOwl/model.py`): `GoniOwlNet(Hyperparameters)` is a port of the Keras Sequential model. It uses Keras BatchNorm defaults (eps 1e-3, momentum 0.01 in PyTorch terms) and Glorot init. `use_bias=True` exists only for the 2025 architecture. Checkpoints are dicts tagged `format: goniowl-torch-v1`; use `save_checkpoint` and `load_checkpoint`, not raw `torch.save`. `count_parameters` counts BatchNorm buffers so the totals match Keras' (51,313).
 
-**Metrics scripts** all parse the same beamline log CSVs: headerless, with columns `DateTime, Histogram, GoniOwl, Human, Image1, Image2`. They normalise labels to `on`/`off` using the same replace maps and exclude `DODGY_DATA` timestamps. That loading logic is copy-pasted across `GoniOwlMetrics.py`, `infer_all.py` and `disagreement_inference.py`.
+**Shipped models** in `src/GoniOwl/`: `20250714-…_batch4.pt` is the deployed default, a conversion of the `.h5` (whose `.keras` twin is really HDF5 too). `20260626-…_batch16.pt` is the manuscript model. `test_committed_checkpoints_are_current` fails if a `.pt` drifts from its Keras source. The 2025 Keras model ran in `mixed_float16`, so its PyTorch port differs from Keras by about 1e-3. The manuscript model matches to about 1e-6.
 
-## Packaging quirks
+**IOC** (`__main__.py`): `INFER` is a `boolOut` with `HIGH=1`, `always_update=True` and `blocking=True`. Every put of 1 runs `controller.infer()` in an executor, and a put with callback completes after `GONIOSTATUS` is set. Without `always_update`, repeated puts inside the 1 s HIGH window are silently ignored. `cothread` is not used, because it doesn't build on macOS arm64.
 
-- Dependencies are split. `pyproject.toml` pins the TF/CUDA training stack but leaves out `softioc`, `cothread` and `epicscorelibs`. Those IOC deps appear only in `setup.cfg` `install_requires`.
-- Versioning is configured twice: `setuptools_scm` in `pyproject.toml` writes `_version.py`, while `setup.py` and `__init__.py` use `_version_git.py`. `Pipfile` refers to `pymalcolm`, another template leftover.
-- The Singularity/SLURM files in `src/Training/` refer to an older TF 2.8.2 image and script names (`img_classification*.py`) that no longer exist.
-- The README gives `src/Training/inference_on_disagreements.py` as the path, but the file actually lives in `src/Metrics/`.
+**Training script**: deliberate choices that shouldn't be reverted:
+- Images are cached in memory, then each epoch reshuffles and applies fresh per-image GPU augmentation (`augmentations`).
+- `PlateauLR` and `EarlyStopping` re-implement Keras semantics on `val_auc` (mode max). `val_loss` is too noisy on this dataset.
+- Augmentation stays gentle (±3°, ±5%, brightness ±25.5, contrast 0.9–1.1, noise σ=3). Stronger augmentation stops learning.
+- Batch size ≥ 8 (default 16, seed 0). `--parallel` (DataParallel) splits the batch per GPU with separate BatchNorm stats.
+- Adam uses eps=1e-7 (the Keras default).
+- Tuning uses Optuna; `--tuner hyperband` means random sampling plus the HyperbandPruner.
+- On tiny synthetic data, eval-mode accuracy can collapse even though AUC is perfect. That's the dropout→BatchNorm variance shift in this architecture, not a bug (see `test_learns_separable_data`).
+
+**Metrics scripts** parse headerless beamline CSVs with columns `DateTime, Histogram, GoniOwl, Human, Image1, Image2`. The label-normalisation code is copy-pasted across `GoniOwlMetrics.py`, `infer_all.py` and `disagreement_inference.py`.

@@ -4,8 +4,7 @@ run inference on those images, and save results with confidence-prefixed filenam
 
 Example:
   python disagreement_inference.py \
-    --model-path ./outputs/checkpoints/20260219_094846_epoch99_binary_batch16.keras \
-    --img-height 152 --img-width 218
+    --model-path ./outputs/checkpoints/20260219_094846_epoch99_binary_batch16.pt
 """
 
 import os
@@ -16,12 +15,10 @@ import argparse
 import logging
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
-import tensorflow as tf
-import keras
-from keras import Model
-from typing import cast
+
+from GoniOwl.model import load_checkpoint, predict_proba, select_device
+from GoniOwl.preprocess import load_image
 
 
 LOG_DIR = "/dls_sw/i23/logs/GoniOwl"
@@ -39,13 +36,13 @@ def setup_logging() -> logging.Logger:
 logger = setup_logging()
 
 
-def load_disagreements() -> pd.DataFrame:
+def load_disagreements(log_dir: str = LOG_DIR) -> pd.DataFrame:
     """Load CSVs from the log directory and return rows where GoniOwl != Human."""
-    csvs = glob.glob(os.path.join(LOG_DIR, "*.csv"))
+    csvs = glob.glob(os.path.join(log_dir, "*.csv"))
     csvs = [f for f in csvs if os.path.basename(f)[:10] >= START_DATE_CUTOFF]
 
     if not csvs:
-        logger.warning("No CSV files found in %s", LOG_DIR)
+        logger.warning("No CSV files found in %s", log_dir)
         return pd.DataFrame()
 
     df = pd.concat((pd.read_csv(f, header=None) for f in csvs), ignore_index=True)
@@ -69,13 +66,17 @@ def load_disagreements() -> pd.DataFrame:
 def run_inference_on_disagreements(
     disagreements: pd.DataFrame,
     model_path: str,
-    img_height: int,
-    img_width: int,
+    img_height: int | None = None,
+    img_width: int | None = None,
+    crop_border: int = 0,
+    device: str = "auto",
 ) -> list[dict]:
     """Run model inference on each disagreement image and return results."""
     logger.info("Loading model from: %s", model_path)
-    model = cast(Model, keras.models.load_model(model_path))
-    logger.info("Model loaded successfully.")
+    model, info = load_checkpoint(model_path, select_device(device))
+    img_height = img_height or info["img_height"]
+    img_width = img_width or info["img_width"]
+    logger.info("Model loaded successfully (input %dx%d).", img_height, img_width)
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     results = []
@@ -94,11 +95,8 @@ def run_inference_on_disagreements(
         logger.info("[%d/%d] Processing: %s", idx, total, img_path)
 
         try:
-            img = keras.utils.load_img(img_path, target_size=(img_height, img_width))
-            img_array = keras.utils.img_to_array(img)
-            img_array = tf.expand_dims(img_array, 0)
-
-            prediction = float(model.predict(img_array, verbose=0)[0][0])
+            img_array = load_image(img_path, (img_height, img_width), border=crop_border)
+            prediction = float(predict_proba(model, img_array)[0])
 
             if prediction > 0.85:
                 model_label = "on"
@@ -164,8 +162,11 @@ def parse_args() -> argparse.Namespace:
         description="Run inference on GoniOwl/Human disagreement images."
     )
     parser.add_argument("--model-path", required=True, help="Path to the trained model.")
-    parser.add_argument("--img-height", type=int, default=152, help="Image height for inference.")
-    parser.add_argument("--img-width", type=int, default=218, help="Image width for inference.")
+    parser.add_argument("--log-dir", default=LOG_DIR, help="Directory of GoniOwl CSV logs.")
+    parser.add_argument("--img-height", type=int, default=None, help="Image height for inference (default: from the checkpoint).")
+    parser.add_argument("--img-width", type=int, default=None, help="Image width for inference (default: from the checkpoint).")
+    parser.add_argument("--crop-border", type=int, default=0, help="Pixels to crop from each side before resizing (use 100 for raw, uncropped camera frames).")
+    parser.add_argument("--device", default="auto", help="Torch device: auto, cuda, mps or cpu.")
     return parser.parse_args()
 
 
@@ -175,7 +176,7 @@ if __name__ == "__main__":
     if not os.path.exists(args.model_path):
         raise FileNotFoundError(f"Model not found: {args.model_path}")
 
-    disagreements = load_disagreements()
+    disagreements = load_disagreements(args.log_dir)
     if disagreements.empty:
         logger.info("No disagreements found. Nothing to do.")
     else:
@@ -184,5 +185,7 @@ if __name__ == "__main__":
             model_path=args.model_path,
             img_height=args.img_height,
             img_width=args.img_width,
+            crop_border=args.crop_border,
+            device=args.device,
         )
         save_results(results)

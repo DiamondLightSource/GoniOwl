@@ -4,9 +4,8 @@ Shows the image and the model's classification.
 
 Example:
   python inference_on_disagreements.py \
-    --model-path ./outputs/20260127_120000_binary_batch4_div5_tuned.keras \
+    --model-path ./outputs/20260127_120000_binary_batch16_div5_tuned.pt \
     --disagreement-dir /dls/science/groups/i23/scripts/chris/GoniOwl_metrics/disagreements \
-    --img-height 224 --img-width 224 \
     --output-dir ./outputs/inference_results
 """
 
@@ -14,12 +13,12 @@ import os
 import argparse
 import logging
 from pathlib import Path
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import numpy as np
-import tensorflow as tf
-import keras
-from keras import Model
-from typing import cast
+
+from GoniOwl.model import load_checkpoint, predict_proba, select_device
+from GoniOwl.preprocess import load_image
 
 def setup_logging(level: str = "INFO") -> logging.Logger:
     """Configure logging"""
@@ -34,15 +33,19 @@ logger = setup_logging()
 def run_inference(
     model_path: str,
     disagreement_dir: str,
-    img_height: int,
-    img_width: int,
+    img_height: int | None,
+    img_width: int | None,
     output_dir: str,
+    crop_border: int = 0,
+    device: str = "auto",
 ) -> None:
     """Run inference on all images in disagreement folder and display results."""
     
     logger.info("Loading model from: %s", model_path)
-    model = cast(Model, keras.models.load_model(model_path))
-    logger.info("Model loaded successfully.")
+    model, info = load_checkpoint(model_path, select_device(device))
+    img_height = img_height or info["img_height"]
+    img_width = img_width or info["img_width"]
+    logger.info("Model loaded successfully (input %dx%d).", img_height, img_width)
     
     os.makedirs(output_dir, exist_ok=True)
     
@@ -64,11 +67,8 @@ def run_inference(
         logger.info("[%d/%d] Processing: %s", idx, len(image_files), image_path.name)
         
         try:
-            img = keras.utils.load_img(image_path, target_size=(img_height, img_width))
-            img_array = keras.utils.img_to_array(img)
-            img_array = tf.expand_dims(img_array, 0)
-            
-            prediction = model.predict(img_array, verbose="0")[0][0]
+            img = load_image(image_path, (img_height, img_width), border=crop_border)
+            prediction = float(predict_proba(model, img)[0])
             if prediction > 0.85:
                 class_label = "pin on"
             elif prediction < 0.15:
@@ -112,10 +112,12 @@ def run_inference(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run inference on misclassified images.")
-    parser.add_argument("--model-path", required=True, help="Path to the trained .keras model.")
+    parser.add_argument("--model-path", required=True, help="Path to the trained .pt model.")
     parser.add_argument("--disagreement-dir", required=True, help="Path to folder with misclassified images.")
-    parser.add_argument("--img-height", type=int, default=152, help="Image height (matches training).")
-    parser.add_argument("--img-width", type=int, default=218, help="Image width (matches training).")
+    parser.add_argument("--img-height", type=int, default=None, help="Image height (default: from the checkpoint).")
+    parser.add_argument("--img-width", type=int, default=None, help="Image width (default: from the checkpoint).")
+    parser.add_argument("--crop-border", type=int, default=0, help="Pixels to crop from each side before resizing (use 100 for raw, uncropped camera frames).")
+    parser.add_argument("--device", default="auto", help="Torch device: auto, cuda, mps or cpu.")
     parser.add_argument("--output-dir", default="./outputs/inference_results", help="Output directory for results.")
     return parser.parse_args()
 
@@ -133,4 +135,6 @@ if __name__ == "__main__":
         img_height=args.img_height,
         img_width=args.img_width,
         output_dir=args.output_dir,
+        crop_border=args.crop_border,
+        device=args.device,
     )

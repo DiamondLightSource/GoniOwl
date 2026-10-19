@@ -4,81 +4,100 @@
 
 This repository contains the training and deployment code for a convolutional neural network (CNN) that detects the presence or absence of sample pins on a goniometer, in this case beamline I23 at Diamond Light Source. The model is designed to prevent equipment collisions during automated sample handling by providing real-time classification from beamline camera feeds.
 
+The workflow is implemented in **PyTorch**. Models trained with the earlier TensorFlow/Keras version can be converted (see [Converting Keras models](#converting-keras-models)).
+
 ---
 # Usage
 
-## Training
-
 ## Installation
 
-### Using UV pyproject.toml (Recommended)
+### Using UV (Recommended)
 - Create UV virtual environment: `uv venv`
 - Activate virtual environment: `source .venv/bin/activate`
-- Install dependencies from pyproject.toml: `uv pip install -e .`
+- Install the package and its dependencies: `uv pip install -e ".[dev]"`
+- Or reproduce the exact locked environment: `uv sync --extra dev`
 
-### Using pip pyproject.toml
+### Using pip
 - Create Python virtual environment: `python -m venv .venv`
 - Activate virtual environment: `source .venv/bin/activate`
-- Install dependencies from pyproject.toml: `pip install -e .`
+- Install the package and its dependencies: `pip install -e ".[dev]"`
 
-The `-e` flag installs the package in editable mode, allowing you to modify the code without reinstalling.
+Python 3.12+ is required. The `-e` flag installs the package in editable mode, allowing you to modify the code without reinstalling. On Linux the PyPI `torch` wheel bundles CUDA; on Apple silicon training runs on the GPU via MPS.
 
-### Using UV
-- Make uv venv `uv venv`
-- Activate uv venv `source .venv/bin/activate`
-- Install required modules `uv pip install tqdm matplotlib scikit-learn numpy keras-tuner tensorboard opencv-python tensorflow[and-cuda]`
-- Alter the script import_crop_save.py depending on the directory structure of your input images.
+## Data preparation
+
+- Alter `import_crop_save.py` if your input images are in a different directory structure. It expects `<snapshots>/pin_ON/Pin_gripper_on_gonio` and `<snapshots>/pin_OFF/Before_sample_load`.
 - Run `python src/Training/import_crop_save.py --snapshots /path/to/snapshots --imgdir /path/to/save/cropped/images`
-- Check images in output folders manually
-- Run training `python src/Training/train_binary_classification_model.py --train-dir /path/to/save/cropped/images --tune`
+- This crops 100 px from every side of each image into `<imgdir>/goniopin_auto_<ddmmyyyy>_binary/{pinon,pinoff}` and moves a random 10% into `<imgdir>/test_<ddmmyyyy>_binary` as a held-out test set.
+- Check images in output folders manually.
+
+## Training
+
+- Run training `python src/Training/train_binary_classification_model.py --train-dir /path/to/save/cropped/images/goniopin_auto_<ddmmyyyy>_binary`
+- Add `--tune` to search hyperparameters with Optuna first (`--tuner hyperband|bayesianoptimization|randomsearch|gridsearch`, `--tune-trials N`).
+- `--device` picks the device (default `auto`: CUDA, then MPS, then CPU). `--parallel` uses `DataParallel` over all CUDA GPUs; each GPU then sees `batch-size / num_gpus` samples with its own BatchNorm statistics, so raise `--batch-size` accordingly.
 - Batch size matters on this small dataset. A multi-seed sweep (5 seeds × batch sizes 2–64) showed batch ≥ 8 trains reliably to ~0.99, while batch 2–4 frequently collapse to the majority-class baseline (~0.53). The default `--batch-size` is **16** and `--seed` is **0**, matching the model reported in the manuscript.
+- Outputs (in `--tmpdir`, default `./outputs`): the final model `<timestamp>_binary_batch16_div5.pt`, a checkpoint per epoch in `checkpoints/`, TensorBoard logs and a CSV log in `logs/fit/<timestamp>/`, training curves, a validation confusion matrix and sample images.
+- On Diamond's cluster: `sbatch src/Training/train_slurm.sh /path/to/goniopin_auto_<ddmmyyyy>_binary`
 
-### Using python/pip
-- Create python venv `python -m venv .venv`
-- Activate python venv `source .venv/bin/activate`
-- Install required modules `pip install tqdm opencv-python`
-- Alter the script import_crop_save.py depending on the directory structure of your input images.
-- Run `python src/Training/import_crop_save.py --snapshots /path/to/snapshots --imgdir /path/to/save/cropped/images`
-- Check images in output folders manually
-- Generate or download Singularity image
-- Set tfimage environment variable `tfimage=/path/to/tensorflow_2.8.2-gpu-jupyter.sif`
-- Run training `singularity exec --nv --home $PWD $tfimage python src/Training/train_binary_classification_model.py --train_dir /path/to/save/cropped/images`
+## Evaluating on the held-out test set
+
+```bash
+python src/Metrics/evaluate_test_set.py \
+  --model-path ./outputs/YOUR_MODEL.pt \
+  --test-dir /path/to/save/cropped/images/test_<ddmmyyyy>_binary
+```
+
+Reports coverage, accuracy on the confident subset and the confusion matrix using the same 0.85 confidence gate as the IOC.
+
+## Converting Keras models
+
+Models trained with the TensorFlow version (`.h5`, or `.keras`) can be converted to PyTorch checkpoints without installing TensorFlow:
+
+```bash
+python src/Training/convert_keras_to_torch.py --model old_model.keras --output old_model.pt
+```
+
+Converted models reproduce the Keras predictions (to ~1e-6; ~1e-3 for the 2025 model, which Keras ran in `mixed_float16`). Both committed Keras models are provided converted in `src/GoniOwl/`.
 
 ## Inference
 
-- Copy model from training into src/GoniOwl/
-- Alter GoniOwl_controller.py to target model of choice and set log output directory.
-- From src/GoniOwl/ run `pipenv run python -m GoniOwl`. This will launch the ioc from this terminal, so it is advisable to run this via screen/tmux.
+- Copy the model from training into `src/GoniOwl/` (or point `--model` at it).
+- Run the IOC with `GoniOwl` (or `python -m GoniOwl`). This launches the IOC in this terminal, so it is advisable to run it via screen/tmux.
+- Options: `--model` (default: the shipped `20250714-111015_epoch20_binary_batch4.pt`), `--camera-url`, `--log-path`, `--prefix` (default `GONIOWL-TEST`), `--device`, `--last-image` (where the last cropped frame is saved, default `tmp.jpg`), `--non-interactive`.
+
+## Metrics on beamline logs
+
+These read the GoniOwl decision logs (`/dls_sw/i23/logs/GoniOwl/*.csv` by default, `--log-dir` to override). The model input size is read from the checkpoint; use `--crop-border 100` if the logged images are raw, uncropped camera frames.
+
+- `src/Metrics/infer_all.py --model-path MODEL.pt`: fresh inference on every logged image, with annotated images, a CSV and confidence histograms.
+- `src/Metrics/disagreement_inference.py --model-path MODEL.pt`: inference on the images where the logged GoniOwl decision and the human disagree.
+- `src/Metrics/GoniOwlMetrics.py`: agreement statistics between histogram, GoniOwl and human decisions.
 
 ## Inference on Disagreements
 
 To evaluate model performance on images where the live model and training model disagree:
 
 ```bash
-python src/Training/inference_on_disagreements.py \
-  --model-path ./outputs/YOUR_MODEL.keras \
+python src/Metrics/inference_on_disagreements.py \
+  --model-path ./outputs/YOUR_MODEL.pt \
   --disagreement-dir /dls/science/groups/i23/scripts/chris/GoniOwl_metrics/disagreements \
-  --img-height 152 \
-  --img-width 218 \
   --output-dir ./outputs/inference_results
 ```
 
 **Arguments:**
-- `--model-path`: Path to the trained `.keras` model file (required)
+- `--model-path`: Path to the trained `.pt` model file (required)
 - `--disagreement-dir`: Path to folder containing misclassified/disagreement images (required)
-- `--img-height`: Image height used during training (default: 152, adjust based on your training dimensions)
-- `--img-width`: Image width used during training (default: 218, adjust based on your training dimensions)
-- `--output-dir`: Directory to save results and visualizations (default: `./inference_results`)
+- `--img-height` / `--img-width`: Override the image size (default: the size stored in the checkpoint, e.g. 152×218 for `--image-divider 5` on 764×1092 images)
+- `--output-dir`: Directory to save results and visualizations (default: `./outputs/inference_results`)
 
 **Output:**
-- Interactive display of each image with model prediction and confidence percentage
 - PNG visualizations of each image with predictions saved to `--output-dir`
 - CSV summary file (`inference_results.csv`) with filename, predicted class, raw prediction score, and confidence for all images
 
-**Note:** Image dimensions should match the dimensions used during training. If you trained with `--image-divider 5` on 764×1090 images, use `152×218` (764÷5 ≈ 152, 1090÷5 ≈ 218).
-
 ## Testing
 
+- Unit and integration tests: `pytest` (or `pytest -m "not slow"` to skip the tests that train models and start the IOC). The IOC test runs a real soft IOC on loopback and drives it with Channel Access.
 - To check that GoniOwl is running and serving PVs, try `caget GONIOWL-TEST:WHOAMI` -> `GONIOWL-TEST:WHOAMI            GoniOwl Python IOC`
 - To check that inference is working, try:
 `caput GONIOWL-TEST:INFER 1` -> `Old : GONIOWL-TEST:INFER             Disable` `New : GONIOWL-TEST:INFER             Enable`
@@ -87,10 +106,11 @@ then
 
 ## Beamline Implementation
 
-- On I23, Diamond Light Source, the PV `GONIOWL-TEST:INFER` is called by GDA. Logic inside the ioc runs an inference on the latest image from the specified camera feed. A sleep of 0.1s is added here to allow time for the inference to occur with allowance for filesystem lag. 
-- The logic first checks if the image is too light or too dark by getting an average of all the pixels. If this is the case, a PV `GONIOWL-TEST:GONIOSTATUS` is set to 3 and used in GDA as a failsafe stop.
-- If the image passes this first check. Inference is run using the model and a score between 0-1 is generated. 0 indicates 100% certainty of a pin on the goniometer and 1 indicates 100% certainty of no pin on the goniometer. At least 85% certainty is needed to give a definitive decision, so if the score is < 0.15, the PV `GONIOWL-TEST:GONIOSTATUS` is set to 1. If the score is > 0.85, the PV `GONIOWL-TEST:GONIOSTATUS` is set to 2. If the score is (0.85 <= 0.15), the PV `GONIOWL-TEST:GONIOSTATUS` is set to 3. 
-- This PV is checked by GDA to give a decision on whether there is a pin present on the goniometer of not. 1 = pin on, 2 = pin off, 3 = not sure so stop.
+- On I23, Diamond Light Source, the PV `GONIOWL-TEST:INFER` is called by GDA. Every put of 1 runs an inference on the latest image from the specified camera feed straight away. A put with callback (`caput -c`) completes only once `GONIOSTATUS` has been updated; GDA currently adds a sleep of 0.1 s instead.
+- The latest frame has 100 px cropped from each side (as for the training images) and is resized to the model's input size.
+- The logic first checks if the image is too light or too dark from the mean grey level (outside 80–180). If so, `GONIOWL-TEST:GONIOSTATUS` is set to 3 and used in GDA as a failsafe stop. The same happens if the camera image cannot be read.
+- If the image passes this first check, inference is run and a score between 0 and 1 is generated: the model's probability that a pin is on the goniometer. At least 85% certainty is needed to give a definitive decision: if the score is < 0.15 (pin off) `GONIOSTATUS` is set to 1, if the score is > 0.85 (pin on) it is set to 2, and otherwise it is set to 3.
+- This PV is checked by GDA to decide whether there is a pin on the goniometer or not: 1 = pin off, 2 = pin on, 3 = not sure so stop.
 
 # Overview
 
@@ -107,7 +127,7 @@ This project introduces a compact CNN classifier trained on real beamline images
 - **Real-time inference** on standard beamline control PCs (CPU/GPU).
 - **Fail-safe logic** for low-confidence or invalid exposures.
 - **Training pipeline** with augmentation, validation split, and logging.
-- **Optional hyperparameter tuning** via KerasTuner.
+- **Optional hyperparameter tuning** via Optuna.
 - **TensorBoard, CSV logging, and checkpointing** included.
 
 ---
@@ -121,10 +141,18 @@ Held-out test set (875 images), deployment-style offline inference with confiden
 
 Evaluated with manually verified labels. Over a 3-month deployment, the model prevented multiple potential collisions and outperformed legacy histogram-based methods.
 
+The PyTorch pipeline, trained from scratch with the defaults (batch 16, seed 0, 100 epochs, 30% validation split; ~11 min on an Apple M5 Max via MPS), on a fresh 875-image held-out split (458 pin off, 417 pin on) evaluated with `evaluate_test_set.py`:
+- **Coverage**: 99.89% (874/875 confident; the one undetermined image is a pin-on frame scored 0.84)
+- **Accuracy (confident subset)**: 100% (874/874)
+- **Confusion matrix** [[TN, FP], [FN, TP]]: [[458, 0], [0, 416]]
+- **Validation** (2,363 images): accuracy 99.92%
+
 Raw training images: 10.5281/zenodo.17047675
 
-Singularity build used for training: 10.5281/zenodo.17047767
+Singularity build used for training the manuscript (TensorFlow) model: 10.5281/zenodo.17047767
 
 # Issues
-- **cv2 clobbers CUDA libpath** — TF drops to CPU because cv2 overrides `LD_LIBRARY_PATH`, hiding the bundled CUDA libs (e.g. `libcusolver`). Fixed by a re-exec guard at the top of the training script that prepends the `nvidia/*/lib` wheel dirs before importing TensorFlow.
 - **Keep augmentation gentle** — the pin on/off signal is subtle; overly aggressive photometric augmentation (e.g. contrast 0.6–1.4) stops the model learning entirely (training stuck at chance). The current `augmentations()` ranges are tuned to reach ~0.99 validation accuracy.
+- **Resize without antialiasing** — images are resized with bilinear interpolation without antialiasing, exactly like `tf.image.resize` in the original training. Antialiased resizing (e.g. PIL's `BILINEAR`) makes the 2025 model confidently misclassify some pin-on frames as pin-off.
+- **Monitor `val_auc`** — the learning-rate scheduler and early stopping monitor `val_auc`, not `val_loss`; on this small dataset `val_loss` is noisy enough to collapse training to the majority class.
+- **cv2 clobbers CUDA libpath** (TensorFlow version only) — TF dropped to CPU because cv2 overrode `LD_LIBRARY_PATH`. The PyTorch wheels locate their CUDA libraries themselves, so the re-exec workaround is no longer needed.
