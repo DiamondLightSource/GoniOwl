@@ -4,7 +4,7 @@
 
 This repository contains the training and deployment code for a convolutional neural network (CNN) that detects the presence or absence of sample pins on a goniometer, in this case beamline I23 at Diamond Light Source. The model is designed to prevent equipment collisions during automated sample handling by providing real-time classification from beamline camera feeds.
 
-The workflow is implemented in **PyTorch**. Models trained with the earlier TensorFlow/Keras version can be converted (see [Converting Keras models](#converting-keras-models)).
+The workflow is implemented in **PyTorch**. Models trained with the earlier TensorFlow/Keras version can be converted (see [Converting Keras models](#converting-keras-models)). [PYTORCH.md](PYTORCH.md) explains how the port maps to the Keras model, how to use it from Python, and what the hyperparameter search found.
 
 ---
 # Usage
