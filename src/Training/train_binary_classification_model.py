@@ -17,11 +17,14 @@ Example:
 
 import argparse
 import csv
+import json
 import logging
 import math
 import os
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import fields
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
@@ -329,12 +332,18 @@ def fit(
     batch_size: int,
     device: torch.device,
     plateau_patience: Optional[int] = None,
+    plateau_warmup: int = 0,
     early_stopping: Optional[EarlyStopping] = None,
     epoch_callback: Optional[Callable[[int, dict], None]] = None,
     writers: Optional[dict] = None,
     quiet: bool = False,
+    duty_cycle: float = 1.0,
 ) -> dict:
-    """Train ``model`` and return a Keras-style history dict of per-epoch metrics."""
+    """Train ``model`` and return a Keras-style history dict of per-epoch metrics.
+
+    ``duty_cycle`` < 1 sleeps after each batch so the device is busy only that
+    fraction of the time, e.g. to keep a laptop's power draw under its charger.
+    """
     # Keras Adam defaults (epsilon=1e-7).
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, eps=1e-7)
     plateau = PlateauLR(optimizer, patience=plateau_patience) if plateau_patience else None
@@ -347,6 +356,7 @@ def fit(
         model.train()
         total_loss, seen, probs, labels_seen = 0.0, 0, [], []
         for images, labels in iterate_batches(train, batch_size, shuffle=True):
+            batch_start = time.perf_counter()
             x = augmentations(to_model_input(images, device))
             y = labels.to(device)
             logits = model(x)
@@ -355,7 +365,9 @@ def fit(
             loss.backward()
             optimizer.step()
 
-            batch_loss = loss.item()
+            batch_loss = loss.item()  # waits for the device, so the timing below is real
+            if duty_cycle < 1.0:
+                time.sleep((time.perf_counter() - batch_start) * (1.0 - duty_cycle) / duty_cycle)
             total_loss += batch_loss * len(y)
             seen += len(y)
             probs.append(torch.sigmoid(logits.detach()).cpu().numpy())
@@ -384,7 +396,9 @@ def fit(
         if epoch_callback:
             epoch_callback(epoch, logs)
 
-        if plateau:
+        # Models sit at chance for several epochs before learning; a plateau
+        # check during that phase cuts the LR before training has started.
+        if plateau and epoch >= plateau_warmup:
             plateau.step(logs["val_auc"], epoch)
         if early_stopping and early_stopping.step(logs["val_auc"], epoch, model):
             break
@@ -399,6 +413,11 @@ def fit(
 TUNERS = ("hyperband", "bayesianoptimization", "gridsearch", "randomsearch")
 
 
+# Wider models only escape the initial chance-level plateau at <=2e-4, and 2e-3
+# never learns on this dataset, so the search stays at or below 1e-3.
+LEARNING_RATES = [1e-4, 2e-4, 5e-4, 1e-3]
+
+
 def suggest_hyperparameters(trial: "optuna.Trial") -> tuple[Hyperparameters, float]:
     hp = Hyperparameters(
         conv1=trial.suggest_int("conv1", 16, 128, step=8),
@@ -408,11 +427,11 @@ def suggest_hyperparameters(trial: "optuna.Trial") -> tuple[Hyperparameters, flo
         dense_units_1=trial.suggest_int("dense_units_1", 32, 192, step=32),
         dense_units_2=trial.suggest_int("dense_units_2", 32, 192, step=32),
     )
-    learning_rate = trial.suggest_categorical("learning_rate", [5e-4, 1e-3, 2e-3])
+    learning_rate = trial.suggest_categorical("learning_rate", LEARNING_RATES)
     return hp, learning_rate
 
 
-def make_study(tuner: str, seed: int, max_epochs: int) -> "optuna.Study":
+def make_study(tuner: str, seed: int, max_epochs: int, min_epochs: int = 1) -> "optuna.Study":
     pruner = optuna.pruners.NopPruner()
     if tuner == "bayesianoptimization":
         sampler = optuna.samplers.GPSampler(seed=seed, n_startup_trials=5)
@@ -424,15 +443,19 @@ def make_study(tuner: str, seed: int, max_epochs: int) -> "optuna.Study":
             "conv2_2": list(range(24, 129, 8)),
             "dense_units_1": list(range(32, 193, 32)),
             "dense_units_2": list(range(32, 193, 32)),
-            "learning_rate": [5e-4, 1e-3, 2e-3],
+            "learning_rate": LEARNING_RATES,
         }
         sampler = optuna.samplers.GridSampler(space, seed=seed)
     elif tuner == "randomsearch":
         sampler = optuna.samplers.RandomSampler(seed=seed)
     else:
         # Hyperband: random configurations, successive-halving on the epoch budget.
+        # Every model sits at chance for the first few epochs, so pruning any
+        # earlier than min_epochs is a coin toss.
         sampler = optuna.samplers.RandomSampler(seed=seed)
-        pruner = optuna.pruners.HyperbandPruner(min_resource=1, max_resource=max_epochs, reduction_factor=3)
+        pruner = optuna.pruners.HyperbandPruner(
+            min_resource=min(min_epochs, max_epochs), max_resource=max_epochs, reduction_factor=3
+        )
     return optuna.create_study(direction="maximize", sampler=sampler, pruner=pruner)
 
 
@@ -441,7 +464,7 @@ def tune(args, train: ImageSet, val: ImageSet, device: torch.device, directory: 
     logger.info("Starting hyperparameter tuning with %s...", args.tuner)
     logger.info("Tuner directory: %s", directory)
     epochs = args.tune_max_epochs if args.tuner == "hyperband" else args.tune_search_epochs
-    study = make_study(args.tuner, args.seed, epochs)
+    study = make_study(args.tuner, args.seed, epochs, args.tune_min_epochs)
 
     def objective(trial: "optuna.Trial") -> float:
         hp, lr = suggest_hyperparameters(trial)
@@ -459,7 +482,7 @@ def tune(args, train: ImageSet, val: ImageSet, device: torch.device, directory: 
         fit(
             model, train, val,
             epochs=epochs, learning_rate=lr, batch_size=args.batch_size, device=device,
-            early_stopping=EarlyStopping(args.es_patience), epoch_callback=report, quiet=True,
+            early_stopping=EarlyStopping(args.es_patience), epoch_callback=report, quiet=True, duty_cycle=args.duty_cycle,
         )
         logger.info("Trial %d: val_accuracy=%.4f %s lr=%s", trial.number, best, hp, lr)
         return best
@@ -561,6 +584,14 @@ def run(args: argparse.Namespace) -> str:
         directory = os.path.join(tmpdir, f"tune_b{args.batch_size}_{now_string}")
         hp, learning_rate = tune(args, train, val, device, directory)
         torch.manual_seed(args.seed)
+    elif args.hparams:
+        params = json.loads(args.hparams)
+        learning_rate = params.pop("learning_rate", args.learning_rate)
+        unknown = set(params) - {f.name for f in fields(Hyperparameters)}
+        if unknown:
+            raise ValueError(f"Unknown --hparams keys: {sorted(unknown)}")
+        hp = Hyperparameters(**params)
+        logger.info("Building model from --hparams: %s lr=%s", hp, learning_rate)
     else:
         logger.info("Building predefined model...")
         hp, learning_rate = Hyperparameters(), args.learning_rate
@@ -625,6 +656,8 @@ def run(args: argparse.Namespace) -> str:
             # val_auc is stable ~0.998. Monitoring val_loss made the scheduler slash the
             # LR on noise and freeze the model at the majority-class baseline.
             plateau_patience=args.plateau_patience,
+            plateau_warmup=args.plateau_warmup,
+            duty_cycle=args.duty_cycle,
             early_stopping=EarlyStopping(args.es_patience, restore_best_weights=True) if args.early_stopping else None,
             epoch_callback=on_epoch_end,
             writers=writers,
@@ -640,7 +673,7 @@ def run(args: argparse.Namespace) -> str:
 
     final_model_path = os.path.join(
         tmpdir,
-        f"{now_string}_binary_batch{args.batch_size}_div{args.image_divider}{'_tuned' if args.tune else ''}.pt",
+        f"{now_string}_binary_batch{args.batch_size}_div{args.image_divider}{'_tuned' if args.tune or args.hparams else ''}.pt",
     )
     logger.info("Saving model to: %s", final_model_path)
     save_checkpoint(
@@ -672,15 +705,19 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--early-stopping", action="store_true", help="Enable EarlyStopping on val_auc.")
     parser.add_argument("--es-patience", type=int, default=10, help="Patience for EarlyStopping.")
     parser.add_argument("--plateau-patience", type=int, default=5, help="Patience for ReduceLROnPlateau.")
+    parser.add_argument("--plateau-warmup", type=int, default=10, help="Epochs before ReduceLROnPlateau starts watching val_auc. At lr<=5e-4 models stay at chance for 5-10 epochs.")
+    parser.add_argument("--hparams", help='Train this architecture instead of the default, as JSON, e.g. the best trial of a previous --tune run: \'{"conv1": 80, "conv1_2": 104, "conv2": 88, "conv2_2": 80, "dense_units_1": 96, "dense_units_2": 128, "learning_rate": 5e-4}\'.')
 
     parser.add_argument("--tune", action="store_true", help="Use Optuna to search hyperparameters.")
     parser.add_argument("--tuner", type=str, default="hyperband", choices=TUNERS, help="Search method: hyperband (random sampling + Hyperband pruning), bayesianoptimization (Gaussian process), gridsearch, randomsearch.")
-    parser.add_argument("--tune-max-epochs", type=int, default=15, help="Hyperband only: max epochs per trial.")
+    parser.add_argument("--tune-max-epochs", type=int, default=30, help="Hyperband only: max epochs per trial.")
+    parser.add_argument("--tune-min-epochs", type=int, default=8, help="Hyperband only: epochs before a trial can be pruned. Models stay at chance for the first 3-7 epochs.")
     parser.add_argument("--tune-trials", type=int, default=25, help="Total models to try. Small values (e.g. 3) get stuck at the majority-class baseline on this dataset.")
-    parser.add_argument("--tune-search-epochs", type=int, default=5, help="Epochs per trial for bayesianoptimization/gridsearch/randomsearch; Hyperband uses --tune-max-epochs.")
+    parser.add_argument("--tune-search-epochs", type=int, default=15, help="Epochs per trial for bayesianoptimization/gridsearch/randomsearch; Hyperband uses --tune-max-epochs.")
 
     parser.add_argument("--parallel", action="store_true", help="Use DataParallel across all visible CUDA GPUs. Each GPU sees batch-size/num_gpus samples and keeps its own BatchNorm statistics, so raise --batch-size to keep >=8 per GPU.")
     parser.add_argument("--device", default="auto", help="Device to train on: auto (cuda > mps > cpu), cuda, cuda:1, mps or cpu.")
+    parser.add_argument("--duty-cycle", type=float, default=1.0, help="Fraction of time the device trains (0-1]. Sleeping between batches cuts average power, e.g. 0.5 roughly halves it and doubles run time.")
     parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1), help="Threads used to decode images.")
     parser.add_argument("--tmpdir", default="./outputs", help="Base output directory for logs/checkpoints/models.")
     parser.add_argument("--image-divider", type=int, default=5, help="Value to divide image width and height by before training.")
@@ -698,6 +735,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         raise FileNotFoundError(f"--val-dir does not exist: {args.val_dir}")
     if not args.val_dir and not (0.0 < args.val_split < 1.0):
         raise ValueError("--val-split must be set in (0,1) when --val-dir is not provided.")
+    if args.hparams and args.tune:
+        raise ValueError("--hparams and --tune are mutually exclusive.")
+    if not (0.0 < args.duty_cycle <= 1.0):
+        raise ValueError("--duty-cycle must be in (0,1].")
 
     return args
 

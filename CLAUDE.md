@@ -57,7 +57,7 @@ This is the same mapping as the IOC code. The README's "Beamline Implementation"
 - Augmentation stays gentle (±3°, ±5%, brightness ±25.5, contrast 0.9–1.1, noise σ=3). Stronger augmentation stops learning.
 - Batch size ≥ 8 (default 16, seed 0). `--parallel` (DataParallel) splits the batch per GPU with separate BatchNorm stats.
 - Adam uses eps=1e-7 (the Keras default).
-- Tuning uses Optuna; `--tuner hyperband` means random sampling plus the HyperbandPruner.
+- Tuning uses Optuna; `--tuner hyperband` means random sampling plus the HyperbandPruner. Models sit at chance for 3–7 epochs before learning suddenly. A learning rate of 2e-3 never learns, and wider nets need ≤2e-4. So the learning rates are capped at 1e-3 and trials can't be pruned before `--tune-min-epochs` (8). For the same reason, `--plateau-warmup` (10) keeps ReduceLROnPlateau from cutting the LR before learning starts.
 - On tiny synthetic data, eval-mode accuracy can collapse even though AUC is perfect. That's the dropout→BatchNorm variance shift in this architecture, not a bug (see `test_learns_separable_data`).
 
 **Metrics scripts** parse headerless beamline CSVs with columns `DateTime, Histogram, GoniOwl, Human, Image1, Image2`. The label-normalisation code is copy-pasted across `GoniOwlMetrics.py`, `infer_all.py` and `disagreement_inference.py`.

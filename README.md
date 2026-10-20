@@ -35,6 +35,10 @@ Python 3.12+ is required. The `-e` flag installs the package in editable mode, a
 
 - Run training `python src/Training/train_binary_classification_model.py --train-dir /path/to/save/cropped/images/goniopin_auto_<ddmmyyyy>_binary`
 - Add `--tune` to search hyperparameters with Optuna first (`--tuner hyperband|bayesianoptimization|randomsearch|gridsearch`, `--tune-trials N`).
+  Every model stays at chance for the first 3–7 epochs, and wider models only learn at learning rates of 2e-4 or below, so the search uses learning rates 1e-4–1e-3 and Hyperband cannot prune a trial before `--tune-min-epochs` (default 8).
+- `--hparams '{"conv1": 80, ..., "learning_rate": 5e-4}'` trains a given architecture, e.g. the best trial from a search's `trials.csv`, without searching again.
+- `--plateau-warmup` (default 10) stops ReduceLROnPlateau from acting during the first epochs, when the model is still at chance; without it, configurations at lr ≤ 5e-4 get their learning rate cut before they start learning.
+- `--duty-cycle 0.5` sleeps between batches so the GPU only trains half the time. Use it on a laptop whose charger can't keep up with a long run.
 - `--device` picks the device (default `auto`: CUDA, then MPS, then CPU). `--parallel` uses `DataParallel` over all CUDA GPUs; each GPU then sees `batch-size / num_gpus` samples with its own BatchNorm statistics, so raise `--batch-size` accordingly.
 - Batch size matters on this small dataset. A multi-seed sweep (5 seeds × batch sizes 2–64) showed batch ≥ 8 trains reliably to ~0.99, while batch 2–4 frequently collapse to the majority-class baseline (~0.53). The default `--batch-size` is **16** and `--seed` is **0**, matching the model reported in the manuscript.
 - Outputs (in `--tmpdir`, default `./outputs`): the final model `<timestamp>_binary_batch16_div5.pt`, a checkpoint per epoch in `checkpoints/`, TensorBoard logs and a CSV log in `logs/fit/<timestamp>/`, training curves, a validation confusion matrix and sample images.
