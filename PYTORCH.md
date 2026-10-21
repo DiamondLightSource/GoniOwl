@@ -94,6 +94,20 @@ Both give the same decisions as Keras on the test fixtures (`tests/fixtures/`), 
 - **What separates them is whether they train reliably.** Two of the four winners failed when retrained from a different random seed.
 - **The default architecture stays.** It's as accurate as anything the search found, at a fifth of the size, and it starts learning reliably.
 
+**Multi-seed check.** The default and the batch-16 winner were each trained with seeds 0–3 (batch 16, 100 epochs) and scored on the same 875-image test set:
+
+| seed | default: starts learning at epoch | default: unsure | default: test log-loss | tuned: starts learning at epoch | tuned: unsure | tuned: test log-loss |
+|---|---|---|---|---|---|---|
+| 0 | 4 | 1 | 0.00041 | 12 | 0 | 0.00036 |
+| 1 | 4 | 1 | 0.00037 | 6 | 1 | 0.00133 |
+| 2 | 6 | 0 | 0.00032 | 10 | 0 | 0.00009 |
+| 3 | 6 | 0 | 0.00005 | 20 | 1 | 0.00043 |
+
+- **Accuracy is the same.** All 8 runs learned and none made a confident error.
+- **The default is more consistent.** Its average test log-loss was about half the tuned model's.
+- **The default is cheaper.** It starts learning sooner and trains in about 12 minutes, against about 45.
+- **The single-seed edge didn't hold.** The tuned model's advantage in the first comparison was the luck of one seed.
+
 ## Decision mapping
 
 `preprocess.decide` maps P(pin on) to the `GONIOSTATUS` value that GDA reads:
